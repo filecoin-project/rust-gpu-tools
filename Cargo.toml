@@ -1,0 +1,13 @@
+[package]
+name = "rust-cl-tools"
+version = "0.1.0"
+authors = ["Keyvan Kambakhsh <keyvankambakhsh@gmail.com>", "porcuquine <porcuquine@gmail.com>"]
+description = "Rust OpenCL tools"
+edition = "2018"
+homepage = "https://github.com/filecoin-project/rust-cl-tools"
+license = "MIT/Apache-2.0"
+repository = "https://github.com/filecoin-project/rust-cl-tools"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
