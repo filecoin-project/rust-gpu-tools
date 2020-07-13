@@ -1,4 +1,4 @@
-# rust-cl-tools [![Crates.io](https://img.shields.io/crates/v/rust-cl-tools.svg)](https://crates.io/crates/rust-cl-tools)
+# rust-gpu-tools [![Crates.io](https://img.shields.io/crates/v/rust-gpu-tools.svg)](https://crates.io/crates/rust-gpu-tools)
 
 Rust OpenCL tools
 
