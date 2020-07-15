@@ -58,21 +58,22 @@ impl Brand {
         }
     }
     pub fn get_devices(&self) -> Vec<Device> {
-        ocl::Device::list_all(
-            find_platform(match self {
-                Brand::Nvidia => "NVIDIA CUDA",
-                Brand::Amd => "AMD Accelerated Parallel Processing",
-            })
-            .unwrap(),
-        )
-        .unwrap()
-        .into_iter()
-        .map(|d| Device {
-            brand: *self,
-            bus_id: self.extract_bus_id(d),
-            device: d,
-        })
-        .collect()
+        let plat = find_platform(match self {
+            Brand::Nvidia => "NVIDIA CUDA",
+            Brand::Amd => "AMD Accelerated Parallel Processing",
+        });
+        match plat {
+            Some(plat) => ocl::Device::list_all(plat)
+                .unwrap()
+                .into_iter()
+                .map(|d| Device {
+                    brand: *self,
+                    bus_id: self.extract_bus_id(d),
+                    device: d,
+                })
+                .collect(),
+            None => Vec::new(),
+        }
     }
 }
 
