@@ -11,3 +11,11 @@ repository = "https://github.com/filecoin-project/rust-gpu-tools"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+fs2 = { version = "0.4.3", optional = true }
+lazy_static = "1.4.0"
+log = "0.4.8"
+rand = "0.5.0"
+
+[features]
+default = ["scheduler"]
+scheduler = ["fs2"]

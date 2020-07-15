@@ -1,3 +1,5 @@
+mod scheduler;
+
 #[cfg(test)]
 mod tests {
     #[test]
