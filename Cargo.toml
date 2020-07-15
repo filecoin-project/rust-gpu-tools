@@ -12,3 +12,5 @@ repository = "https://github.com/filecoin-project/rust-gpu-tools"
 
 [dependencies]
 ocl = { version = "0.19.4", package = "fil-ocl" }
+dirs = "2.0.2"
+sha2 = "0.8.2"

@@ -1,4 +1,29 @@
+use sha2::{Digest, Sha256};
+use std::fmt::Write;
+
 pub type BusId = u64;
+
+fn cache_path(
+    device_name: &str,
+    bus_id: BusId,
+    cl_source: &str,
+) -> std::io::Result<std::path::PathBuf> {
+    let path = dirs::home_dir().unwrap().join(".rust-gpu-tools");
+    if !std::path::Path::exists(&path) {
+        std::fs::create_dir(&path)?;
+    }
+    let mut hasher = Sha256::new();
+    hasher.input(device_name.as_bytes());
+    hasher.input(bus_id.to_be_bytes());
+    hasher.input(cl_source.as_bytes());
+    let mut digest = String::new();
+    for &byte in hasher.result()[..].iter() {
+        write!(&mut digest, "{:x}", byte).unwrap();
+    }
+    write!(&mut digest, ".bin").unwrap();
+
+    Ok(path.join(digest))
+}
 
 fn find_platform(platform_name: &str) -> Option<ocl::Platform> {
     ocl::Platform::list()
@@ -55,13 +80,21 @@ pub struct Program {
 
 impl Program {
     pub fn from_opencl(device: Device, src: &str) -> Program {
-        Program {
-            proque__: ocl::ProQue::builder()
-                .device(device.device)
-                .src(src)
-                .dims(1)
-                .build()
-                .unwrap(),
+        let cached = cache_path(&device.device.name().unwrap(), device.bus_id, src).unwrap();
+        if std::path::Path::exists(&cached) {
+            let bin = std::fs::read(cached).unwrap();
+            Program::from_binary(device, bin)
+        } else {
+            let prog = Program {
+                proque__: ocl::ProQue::builder()
+                    .device(device.device)
+                    .src(src)
+                    .dims(1)
+                    .build()
+                    .unwrap(),
+            };
+            std::fs::write(cached, prog.to_binary());
+            prog
         }
     }
     pub fn from_binary(device: Device, bin: Vec<u8>) -> Program {
