@@ -1,7 +1,9 @@
+mod busid;
+
 use sha2::{Digest, Sha256};
 use std::fmt::Write;
 
-pub type BusId = u64;
+pub type BusId = u32;
 
 fn cache_path(
     device_name: &str,
@@ -51,7 +53,7 @@ pub struct Device {
 impl Brand {
     fn extract_bus_id(&self, d: ocl::Device) -> BusId {
         match self {
-            Brand::Nvidia => unimplemented!(),
+            Brand::Nvidia => busid::get_nvidia_bus_id(d).unwrap(),
             Brand::Amd => unimplemented!(),
         }
     }
