@@ -1,3 +1,5 @@
+pub type BusId = u64;
+
 fn find_platform(platform_name: &str) -> Option<ocl::Platform> {
     ocl::Platform::list()
         .unwrap()
@@ -8,17 +10,26 @@ fn find_platform(platform_name: &str) -> Option<ocl::Platform> {
         })
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum Brand {
     Amd,
     Nvidia,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct Device {
+    brand: Brand,
+    bus_id: BusId,
     device: ocl::Device,
 }
 
 impl Brand {
+    fn extract_bus_id(&self, d: ocl::Device) -> BusId {
+        match self {
+            Brand::Nvidia => unimplemented!(),
+            Brand::Amd => unimplemented!(),
+        }
+    }
     pub fn get_devices(&self) -> Vec<Device> {
         ocl::Device::list_all(
             find_platform(match self {
@@ -29,7 +40,11 @@ impl Brand {
         )
         .unwrap()
         .into_iter()
-        .map(|d| Device { device: d })
+        .map(|d| Device {
+            brand: *self,
+            bus_id: self.extract_bus_id(d),
+            device: d,
+        })
         .collect()
     }
 }
