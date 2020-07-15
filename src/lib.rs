@@ -54,7 +54,7 @@ impl Brand {
     fn extract_bus_id(&self, d: ocl::Device) -> BusId {
         match self {
             Brand::Nvidia => busid::get_nvidia_bus_id(d).unwrap(),
-            Brand::Amd => unimplemented!(),
+            Brand::Amd => busid::get_amd_bus_id(d).unwrap(),
         }
     }
     pub fn get_devices(&self) -> Vec<Device> {
