@@ -42,9 +42,9 @@ pub struct ResourceLock {
 }
 
 impl ResourceLock {
-    pub fn lock(path: &PathBuf, resource: &dyn Resource) -> Result<ResourceLock, Error> {
+    pub fn lock(dir: &PathBuf, resource: &dyn Resource) -> Result<ResourceLock, Error> {
         debug!("Acquiring lock for {}...", resource.name());
-        let file = File::create(path.join(LOCK_NAME))?;
+        let file = File::create(dir.join(LOCK_NAME))?;
         file.lock_exclusive()?;
         debug!("Resource lock acquired for {}!", resource.name());
         Ok(Self {
@@ -199,13 +199,6 @@ pub struct Task<'a, R: Resource> {
     executor: &'a dyn TaskExecutor<R>,
 }
 
-impl<'a, R: Resource> Task<'a, R> {
-    fn perform(&self, path: &PathBuf, resource: &R, scheduler: &FSResourceScheduler<R>) {
-        let lock = ResourceLock::lock(path, resource);
-        self.executor.execute(scheduler)
-    }
-}
-
 pub struct FSScheduler<'a, R: Resource> {
     root: PathBuf,
     task_files: HashMap<TaskIdent, HashSet<TaskFile>>,
@@ -257,14 +250,7 @@ impl<'a, R: Resource> FSResourceScheduler<'a, R> {
     pub fn lock(&self) -> Result<ResourceLock, Error> {
         ResourceLock::lock(&self.dir, &self.resource)
     }
-}
 
-trait Preemption<R: Resource> {
-    // Return true if task should be preempted now.
-    fn preempt_now(&self, _task: &Task<R>) -> bool;
-}
-
-impl<'a, R: Resource> FSResourceScheduler<'a, R> {
     pub fn handle_next(&mut self) -> Result<(), Error> {
         assert!(self.dir.is_dir(), "scheduler dir is not a directory.");
         let mut ident_creations = fs::read_dir(&self.dir)?
@@ -323,8 +309,9 @@ impl<'a, R: Resource> FSResourceScheduler<'a, R> {
                             });
                         }
 
-                        task.perform(&self.dir, &self.resource, &self);
+                        self.perform_task(&task);
                         performed_task = true;
+
                         // Finally, destroy this taskfile too.
 
                         // TODO: Destroy it.
@@ -360,6 +347,16 @@ impl<'a, R: Resource> FSResourceScheduler<'a, R> {
 
         Ok(())
     }
+
+    fn perform_task(&self, task: &Task<R>) {
+        let lock = ResourceLock::lock(&self.dir, &self.resource);
+        task.executor.execute(self)
+    }
+}
+
+trait Preemption<R: Resource> {
+    // Return true if task should be preempted now.
+    fn preempt_now(&self, _task: &Task<R>) -> bool;
 }
 
 impl<'a, R: Resource> Preemption<R> for FSResourceScheduler<'a, R> {
