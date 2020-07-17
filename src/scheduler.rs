@@ -178,21 +178,28 @@ impl FromStr for TaskIdent {
     }
 }
 
-#[derive(Clone)]
-pub struct Task<R: Resource> {
+/// A TaskExecutor acts as a callback which executes the job associated with a task.
+trait TaskExecutor<R: Resource> {
+    /// `execute` executes a task's job. `preempt.preempt_now()` should be polled as appropriate,
+    /// and execution should terminate if it returns true. Tasks which are no preemptible need not
+    /// ever check for preemption.
+    fn execute(&self, preempt: &PreemptCheck<R>);
+
+    /// Returns true if the job associated with this `TaskExecutor` can be preempted. Executors
+    /// which return `true` should periodically poll for preemption while executing.
+    fn preemptible(&self) -> bool;
+}
+
+// #[derive(Clone)]
+pub struct Task<'a, R: Resource> {
     ident: TaskIdent,
     /// These are the resources for which the `Task` has been requested to be scheduled,
     /// in order of preference. It is guaranteed that the `Task` will be scheduled on only one of these.
     resources: Option<Vec<R>>,
-    /// `task_fn` must fully clean up its `Resource` on completion.
-    /// It must also communicate its results somehow, probably by sending to a channel over which it closes.
-    task_fn: fn(&R),
-    /// `preempt_fn` may be called at some point after `task_fn`. If called, it should cooperate with its `Resource`
-    /// to cease its current operation immediately and clean up the resource so a new task can be performed as soon as possible.
-    preempt_fn: Option<fn(&R)>,
+    executor: &'a dyn TaskExecutor<R>,
 }
 
-impl<'a, R: Resource> Task<R> {
+impl<'a, R: Resource> Task<'a, R> {
     fn is_own(&self) -> bool {
         match self.ident.process {
             Process::Own => true,
@@ -204,20 +211,20 @@ impl<'a, R: Resource> Task<R> {
         self.ident.to_string()
     }
 
-    fn perform(&self, path: &PathBuf, resource: &R) {
+    fn perform(&self, path: &PathBuf, resource: &R, scheduler: &FSResourceScheduler<R>) {
         let lock = ResourceLock::lock(path, resource);
-        (self.task_fn)(resource);
+        self.executor.execute(scheduler)
     }
 }
 
-pub struct FSScheduler<R: Resource> {
+pub struct FSScheduler<'a, R: Resource> {
     root: PathBuf,
     task_files: HashMap<TaskIdent, HashSet<TaskFile>>,
-    own_tasks: HashMap<TaskIdent, Mutex<Task<R>>>,
+    own_tasks: HashMap<TaskIdent, Mutex<Task<'a, R>>>,
     _r: PhantomData<R>,
 }
 
-impl<'a, R: Resource> FSScheduler<R> {
+impl<'a, R: Resource> FSScheduler<'a, R> {
     fn new(root: PathBuf) -> Result<Self, Error> {
         create_dir_all(&root)?;
         Ok(Self {
@@ -229,25 +236,30 @@ impl<'a, R: Resource> FSScheduler<R> {
     }
 
     fn schedule(&mut self, task: &Task<R>) -> Result<(), Error> {
-        unimplemented!();
+        todo!();
     }
 }
 
-pub struct FSResourceScheduler<R: Resource> {
-    root_scheduler: FSScheduler<R>,
+pub struct FSResourceScheduler<'a, R: Resource> {
+    root_scheduler: FSScheduler<'a, R>,
     dir: PathBuf,
     resource: R,
     previous: Option<TaskIdent>,
 }
 
-impl<'a, R: Resource> FSResourceScheduler<R> {
+impl<'a, R: Resource> FSResourceScheduler<'a, R> {
     pub fn lock(&self) -> Result<ResourceLock, Error> {
         ResourceLock::lock(&self.dir, &self.resource)
     }
 }
 
-impl<'a, R: Resource> FSResourceScheduler<R> {
-    pub fn schedule(&mut self, task: Task<R>) -> Result<(), Error> {
+trait PreemptCheck<R: Resource> {
+    // Return true if task should be preempted now.
+    fn preempt_now(&self, _task: &Task<R>) -> bool;
+}
+
+impl<'a, R: Resource> FSResourceScheduler<'a, R> {
+    pub fn schedule(&mut self, task: Task<'a, R>) -> Result<(), Error> {
         let task_file = TaskFile::create(&self.dir, &task.ident.clone())?;
         self.root_scheduler
             .task_files
@@ -320,7 +332,7 @@ impl<'a, R: Resource> FSResourceScheduler<R> {
                             });
                         }
 
-                        task.perform(&self.dir, &self.resource);
+                        task.perform(&self.dir, &self.resource, &self);
                         performed_task = true;
                         // Finally, destroy this taskfile too.
 
@@ -357,8 +369,10 @@ impl<'a, R: Resource> FSResourceScheduler<R> {
 
         Ok(())
     }
+}
 
-    fn poll(&mut self) -> bool {
-        unimplemented!();
+impl<'a, R: Resource> PreemptCheck<R> for FSResourceScheduler<'a, R> {
+    fn preempt_now(&self, _task: &Task<R>) -> bool {
+        todo!();
     }
 }
