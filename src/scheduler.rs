@@ -19,7 +19,6 @@ use std::sync::Mutex;
 
 /// How often, in milliseconds, should we poll?
 const POLL_INTERVAL_MS: usize = 1000;
-
 const LOCK_NAME: &str = "resource.lock";
 
 lazy_static! {
@@ -47,7 +46,7 @@ impl ResourceLock {
         debug!("Acquiring lock for {}...", resource.name());
         let file = File::create(path.join(LOCK_NAME))?;
         file.lock_exclusive()?;
-        debug!("Resource lock acquired!");
+        debug!("Resource lock acquired for {}!", resource.name());
         Ok(Self {
             file,
             name: resource.name(),
@@ -73,6 +72,7 @@ impl PartialEq for TaskFile {
         self.path.eq(&other.path)
     }
 }
+
 impl Eq for TaskFile {}
 
 impl std::hash::Hash for TaskFile {
@@ -183,7 +183,7 @@ trait TaskExecutor<R: Resource> {
     /// `execute` executes a task's job. `preempt.preempt_now()` should be polled as appropriate,
     /// and execution should terminate if it returns true. Tasks which are no preemptible need not
     /// ever check for preemption.
-    fn execute(&self, preempt: &PreemptCheck<R>);
+    fn execute(&self, preempt: &dyn Preemption<R>);
 
     /// Returns true if the job associated with this `TaskExecutor` can be preempted. Executors
     /// which return `true` should periodically poll for preemption while executing.
@@ -200,17 +200,6 @@ pub struct Task<'a, R: Resource> {
 }
 
 impl<'a, R: Resource> Task<'a, R> {
-    fn is_own(&self) -> bool {
-        match self.ident.process {
-            Process::Own => true,
-            Process::Other => false,
-        }
-    }
-
-    fn identifier(&self) -> String {
-        self.ident.to_string()
-    }
-
     fn perform(&self, path: &PathBuf, resource: &R, scheduler: &FSResourceScheduler<R>) {
         let lock = ResourceLock::lock(path, resource);
         self.executor.execute(scheduler)
@@ -220,7 +209,7 @@ impl<'a, R: Resource> Task<'a, R> {
 pub struct FSScheduler<'a, R: Resource> {
     root: PathBuf,
     task_files: HashMap<TaskIdent, HashSet<TaskFile>>,
-    own_tasks: HashMap<TaskIdent, Mutex<Task<'a, R>>>,
+    own_tasks: HashMap<TaskIdent, Mutex<&'a Task<'a, R>>>,
     _r: PhantomData<R>,
 }
 
@@ -234,9 +223,26 @@ impl<'a, R: Resource> FSScheduler<'a, R> {
             _r: PhantomData,
         })
     }
-
-    fn schedule(&mut self, task: &Task<R>) -> Result<(), Error> {
-        todo!();
+    pub fn schedule(&mut self, task: &'a Task<'a, R>, resources: &[R]) -> Result<(), Error> {
+        for resource in resources {
+            self.schedule_for_resource(&task, resource);
+        }
+        Ok(())
+    }
+    pub fn schedule_for_resource(
+        &mut self,
+        task: &'a Task<'a, R>,
+        resource: &R,
+    ) -> Result<(), Error> {
+        let dir = self.root.join(resource.id());
+        create_dir_all(&dir);
+        let task_file = TaskFile::create(&dir, &task.ident.clone())?;
+        self.task_files
+            .entry(task.ident.clone())
+            .or_insert(Default::default())
+            .insert(task_file);
+        self.own_tasks.insert(task.ident.clone(), Mutex::new(&task));
+        Ok(())
     }
 }
 
@@ -253,27 +259,12 @@ impl<'a, R: Resource> FSResourceScheduler<'a, R> {
     }
 }
 
-trait PreemptCheck<R: Resource> {
+trait Preemption<R: Resource> {
     // Return true if task should be preempted now.
     fn preempt_now(&self, _task: &Task<R>) -> bool;
 }
 
 impl<'a, R: Resource> FSResourceScheduler<'a, R> {
-    pub fn schedule(&mut self, task: Task<'a, R>) -> Result<(), Error> {
-        let task_file = TaskFile::create(&self.dir, &task.ident.clone())?;
-        self.root_scheduler
-            .task_files
-            .entry(task.ident.clone())
-            .or_insert(Default::default())
-            .insert(task_file);
-        self.root_scheduler
-            .own_tasks
-            .insert(task.ident.clone(), Mutex::new(task));
-        Ok(())
-    }
-    pub fn unschedule(&mut self, task: &Task<R>) -> Result<(), Error> {
-        unimplemented!()
-    }
     pub fn handle_next(&mut self) -> Result<(), Error> {
         assert!(self.dir.is_dir(), "scheduler dir is not a directory.");
         let mut ident_creations = fs::read_dir(&self.dir)?
@@ -371,7 +362,7 @@ impl<'a, R: Resource> FSResourceScheduler<'a, R> {
     }
 }
 
-impl<'a, R: Resource> PreemptCheck<R> for FSResourceScheduler<'a, R> {
+impl<'a, R: Resource> Preemption<R> for FSResourceScheduler<'a, R> {
     fn preempt_now(&self, _task: &Task<R>) -> bool {
         todo!();
     }
