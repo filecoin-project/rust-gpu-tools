@@ -195,7 +195,7 @@ pub struct Task<'a, R: Resource> {
     ident: TaskIdent,
     /// These are the resources for which the `Task` has been requested to be scheduled,
     /// in order of preference. It is guaranteed that the `Task` will be scheduled on only one of these.
-    resources: Option<Vec<R>>,
+    resources: Vec<R>,
     executor: &'a dyn TaskExecutor<R>,
 }
 
@@ -216,8 +216,8 @@ impl<'a, R: Resource> FSScheduler<'a, R> {
             _r: PhantomData,
         })
     }
-    pub fn schedule(&mut self, task: &'a Task<'a, R>, resources: &[R]) -> Result<(), Error> {
-        for resource in resources {
+    pub fn schedule(&mut self, task: &'a Task<'a, R>) -> Result<(), Error> {
+        for resource in task.resources.iter() {
             self.schedule_for_resource(&task, resource);
         }
         Ok(())
@@ -349,7 +349,7 @@ impl<'a, R: Resource> FSResourceScheduler<'a, R> {
     }
 
     fn perform_task(&self, task: &Task<R>) {
-        let lock = ResourceLock::lock(&self.dir, &self.resource);
+        ResourceLock::lock(&self.dir, &self.resource);
         task.executor.execute(self)
     }
 }
