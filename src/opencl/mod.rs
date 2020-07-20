@@ -7,7 +7,7 @@ use std::fmt::Write;
 
 pub type BusId = u32;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Brand {
     Amd,
     Nvidia,
