@@ -133,7 +133,6 @@ pub fn get_memory(d: ocl::Device) -> ocl::Result<u64> {
 
 pub struct Program {
     device: Device,
-    context: ocl::Context,
     program: ocl::Program,
     queue: ocl::Queue,
 }
@@ -158,7 +157,6 @@ impl Program {
                 .build(&context)?;
             let queue = ocl::Queue::new(&context, device.device, None)?;
             let prog = Program {
-                context,
                 program,
                 queue,
                 device,
@@ -180,7 +178,6 @@ impl Program {
         let queue = ocl::Queue::new(&context, device.device, None)?;
         Ok(Program {
             device,
-            context,
             program,
             queue,
         })
