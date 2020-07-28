@@ -7,7 +7,7 @@ use std::fmt::Write;
 
 pub type BusId = u32;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Brand {
     Amd,
     Nvidia,
@@ -85,6 +85,9 @@ impl Device {
     pub fn memory(&self) -> u64 {
         self.memory
     }
+    pub fn is_little_endian(&self) -> GPUResult<bool> {
+        Ok(utils::is_little_endian(self.device)?)
+    }
 
     pub fn all() -> GPUResult<Vec<Device>> {
         let mut all = Vec::new();
@@ -124,16 +127,17 @@ impl Device {
     }
 }
 
-pub fn get_memory(d: ocl::Device) -> ocl::Result<u64> {
+pub fn get_memory(d: ocl::Device) -> GPUResult<u64> {
     match d.info(ocl::enums::DeviceInfo::GlobalMemSize)? {
         ocl::enums::DeviceInfoResult::GlobalMemSize(sz) => Ok(sz),
-        _ => panic!(),
+        _ => Err(GPUError::DeviceInfoNotAvailable(
+            ocl::enums::DeviceInfo::GlobalMemSize,
+        )),
     }
 }
 
 pub struct Program {
     device: Device,
-    context: ocl::Context,
     program: ocl::Program,
     queue: ocl::Queue,
 }
@@ -158,7 +162,6 @@ impl Program {
                 .build(&context)?;
             let queue = ocl::Queue::new(&context, device.device, None)?;
             let prog = Program {
-                context,
                 program,
                 queue,
                 device,
@@ -180,7 +183,6 @@ impl Program {
         let queue = ocl::Queue::new(&context, device.device, None)?;
         Ok(Program {
             device,
-            context,
             program,
             queue,
         })
@@ -188,7 +190,9 @@ impl Program {
     pub fn to_binary(&self) -> GPUResult<Vec<u8>> {
         match self.program.info(ocl::enums::ProgramInfo::Binaries)? {
             ocl::enums::ProgramInfoResult::Binaries(bins) => Ok(bins[0].clone()),
-            _ => panic!(),
+            _ => Err(GPUError::ProgramInfoNotAvailable(
+                ocl::enums::ProgramInfo::Binaries,
+            )),
         }
     }
     pub fn create_buffer<T>(&self, length: usize) -> GPUResult<Buffer<T>> {

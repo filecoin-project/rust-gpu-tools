@@ -11,6 +11,15 @@ struct cl_amd_device_topology {
     function: u8,
 }
 
+pub fn is_little_endian(d: ocl::Device) -> GPUResult<bool> {
+    match d.info(ocl::enums::DeviceInfo::EndianLittle)? {
+        ocl::enums::DeviceInfoResult::EndianLittle(b) => Ok(b),
+        _ => Err(GPUError::DeviceInfoNotAvailable(
+            ocl::enums::DeviceInfo::EndianLittle,
+        )),
+    }
+}
+
 pub fn get_nvidia_bus_id(d: ocl::Device) -> ocl::Result<u32> {
     const CL_DEVICE_PCI_BUS_ID_NV: u32 = 0x4008;
     let result = d.info_raw(CL_DEVICE_PCI_BUS_ID_NV)?;
