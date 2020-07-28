@@ -127,10 +127,12 @@ impl Device {
     }
 }
 
-pub fn get_memory(d: ocl::Device) -> ocl::Result<u64> {
+pub fn get_memory(d: ocl::Device) -> GPUResult<u64> {
     match d.info(ocl::enums::DeviceInfo::GlobalMemSize)? {
         ocl::enums::DeviceInfoResult::GlobalMemSize(sz) => Ok(sz),
-        _ => panic!(),
+        _ => Err(GPUError::DeviceInfoNotAvailable(
+            ocl::enums::DeviceInfo::GlobalMemSize,
+        )),
     }
 }
 
@@ -188,7 +190,9 @@ impl Program {
     pub fn to_binary(&self) -> GPUResult<Vec<u8>> {
         match self.program.info(ocl::enums::ProgramInfo::Binaries)? {
             ocl::enums::ProgramInfoResult::Binaries(bins) => Ok(bins[0].clone()),
-            _ => panic!(),
+            _ => Err(GPUError::ProgramInfoNotAvailable(
+                ocl::enums::ProgramInfo::Binaries,
+            )),
         }
     }
     pub fn create_buffer<T>(&self, length: usize) -> GPUResult<Buffer<T>> {

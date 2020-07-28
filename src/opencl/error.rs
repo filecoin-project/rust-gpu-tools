@@ -6,6 +6,10 @@ pub enum GPUError {
     Ocl(ocl::Error),
     #[error("Device not found!")]
     DeviceNotFound,
+    #[error("Device info not available!")]
+    DeviceInfoNotAvailable(ocl::enums::DeviceInfo),
+    #[error("Program info not available!")]
+    ProgramInfoNotAvailable(ocl::enums::ProgramInfo),
     #[error("IO Error: {0}")]
     IO(#[from] std::io::Error),
 }
