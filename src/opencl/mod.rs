@@ -85,6 +85,9 @@ impl Device {
     pub fn memory(&self) -> u64 {
         self.memory
     }
+    pub fn is_little_endian(&self) -> GPUResult<bool> {
+        Ok(utils::is_little_endian(self.device)?)
+    }
 
     pub fn all() -> GPUResult<Vec<Device>> {
         let mut all = Vec::new();
