@@ -88,6 +88,9 @@ impl Device {
     pub fn is_little_endian(&self) -> GPUResult<bool> {
         Ok(utils::is_little_endian(self.device)?)
     }
+    pub fn bus_id(&self) -> BusId {
+        self.bus_id
+    }
 
     pub fn all() -> GPUResult<Vec<Device>> {
         let mut all = Vec::new();

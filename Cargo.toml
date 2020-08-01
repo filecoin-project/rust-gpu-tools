@@ -15,3 +15,14 @@ ocl = { version = "0.19.4", package = "fil-ocl" }
 dirs = "2.0.2"
 sha2 = "0.8.2"
 thiserror = "1.0.10"
+fs2 = { version = "0.4.3", optional = true }
+lazy_static = "1.4.0"
+log = "0.4.8"
+rand = "0.7.3"
+
+[dev-dependencies]
+env_logger = "0.7.0"
+
+[features]
+default = ["scheduler"]
+scheduler = ["fs2"]
