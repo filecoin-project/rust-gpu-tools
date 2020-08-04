@@ -21,6 +21,8 @@ use std::sync::Mutex;
 const POLL_INTERVAL_MS: usize = 1000;
 const LOCK_NAME: &str = "resource.lock";
 
+type Priority = usize;
+
 lazy_static! {
     static ref PROCESS_ID: String = iter::repeat(())
         .map(|()| thread_rng().sample(Alphanumeric))
@@ -29,22 +31,26 @@ lazy_static! {
 }
 
 pub trait Resource {
-    fn id(&self) -> String;
+    /// `dir_id` uniquely identifies the directory associated with the resource.
+    fn dir_id(&self) -> String;
+    /// `name` is the descriptive name of the resource and defaults to wrapping `dir_id`.
     fn name(&self) -> String {
-        format!("Resource #{}", self.id())
+        format!("Resource #{}", self.dir_id())
     }
 }
 
 #[derive(Debug)]
 pub struct ResourceLock {
+    /// ResourceLock holds a reference to lockfile.
     file: File,
     name: String,
 }
 
 impl ResourceLock {
-    pub fn lock(dir: &PathBuf, resource: &dyn Resource) -> Result<ResourceLock, Error> {
+    fn acquire(dir: &PathBuf, resource: &dyn Resource) -> Result<ResourceLock, Error> {
         debug!("Acquiring lock for {}...", resource.name());
-        let file = File::create(dir.join(LOCK_NAME))?;
+        let lockfile_path = dir.join(LOCK_NAME);
+        let file = File::create(lockfile_path)?;
         file.lock_exclusive()?;
         debug!("Resource lock acquired for {}!", resource.name());
         Ok(Self {
@@ -56,8 +62,8 @@ impl ResourceLock {
 
 impl Drop for ResourceLock {
     fn drop(&mut self) {
-        // Lock will have been released when `file` was dropped.
-        debug!("Resource lock released!");
+        // Lock will have been released when `file` is dropped.
+        debug!("Resource lock for {} released!", self.name);
     }
 }
 
@@ -81,40 +87,7 @@ impl std::hash::Hash for TaskFile {
     }
 }
 
-impl Clone for TaskFile {
-    fn clone(&self) -> Self {
-        Self {
-            file: File::try_clone(&self.file).unwrap(),
-            path: self.path.clone(),
-        }
-    }
-}
-
 impl TaskFile {
-    fn path(dir: &PathBuf, ident: &TaskIdent) -> PathBuf {
-        let filename = ident.to_string();
-        dir.join(filename)
-    }
-    fn create(dir: &PathBuf, ident: &TaskIdent) -> Result<TaskFile, Error> {
-        debug!("Enqueueing TaskFile");
-        let path = Self::path(dir, ident);
-        let file = File::create(path.clone())?;
-        file.lock_exclusive()?;
-        debug!("Enqueued TaskFile");
-        Ok(Self {
-            file,
-            path: path.to_path_buf(),
-        })
-    }
-    fn try_destroy_for_ident(dir: &PathBuf, ident: &TaskIdent) -> Result<(), Error> {
-        let path = Self::path(dir, ident);
-        let file = File::open(path.clone())?;
-        file.try_lock_exclusive()?;
-        remove_file(path)?;
-        debug!("Removing TaskFile from queue");
-        Ok(())
-    }
-
     fn destroy(&self) -> Result<(), Error> {
         remove_file(self.path.clone())?;
         debug!("Removing TaskFile from queue");
@@ -122,33 +95,51 @@ impl TaskFile {
     }
 }
 
-#[derive(Debug, Clone, PartialOrd, PartialEq, Eq, Hash)]
-pub struct Priority(usize);
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-enum Process {
-    Own,
-    Other,
-}
-
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub struct TaskIdent {
     priority: Priority,
     name: String,
-    process: Process,
+    id: usize,
+}
+
+/// `TaskIdent`s must uniquely identify `Task`s, so must be created with
+/// `FSScheduler::new_ident` — which manages the id counter.
+impl TaskIdent {
+    fn path(&self, dir: &PathBuf) -> PathBuf {
+        let filename = self.to_string();
+        dir.join(filename)
+    }
+
+    fn enqueue_in_dir(&self, dir: &PathBuf) -> Result<TaskFile, Error> {
+        debug!("Enqueueing TaskFile");
+        let path = self.path(dir);
+        let file = File::create(path.clone())?;
+        file.lock_exclusive()?;
+        debug!("Enqueued TaskFile");
+        Ok(TaskFile {
+            file,
+            path: path.to_path_buf(),
+        })
+    }
+    fn try_destroy(&self, dir: &PathBuf) -> Result<(), Error> {
+        let path = self.path(dir);
+        let file = File::open(path.clone())?;
+        file.try_lock_exclusive()?;
+        remove_file(path)?;
+        debug!("Removing TaskFile from queue");
+        Ok(())
+    }
 }
 
 impl ToString for TaskIdent {
     fn to_string(&self) -> String {
-        match self.process {
-            Process::Own => format!(
-                "{priority}-{process}-{name}",
-                priority = self.priority.0,
-                process = *PROCESS_ID,
-                name = self.name
-            ),
-            Process::Other => panic!("cannot format ident for other proceses"),
-        }
+        format!(
+            "{priority}-{process}-{name}-{id}",
+            priority = self.priority,
+            process = *PROCESS_ID,
+            name = self.name,
+            id = self.id,
+        )
     }
 }
 
@@ -157,84 +148,76 @@ impl FromStr for TaskIdent {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts: Vec<_> = s.split("-").collect();
-        let priority: Priority = Priority(parts.get(0).map(|s| s.parse().unwrap()).unwrap());
-        let process = parts
-            .get(1)
-            .map(|p| {
-                if *p == &*PROCESS_ID {
-                    Process::Own
-                } else {
-                    Process::Other
-                }
-            })
-            .unwrap();
-        let name = parts.get(2).unwrap_or(&"");
-
-        Ok(Self {
-            priority,
-            process,
-            name: name.to_string(),
-        })
+        let priority: Priority = parts.get(0).map(|s| s.parse().unwrap()).unwrap();
+        // Ignore the 'process' segment.
+        let name = parts.get(2).unwrap_or(&"").to_string();
+        let id = parts.get(3).unwrap_or(&"0").parse().unwrap_or(0); // FIXME: How should we actually handle a bad identifier string?
+        Ok(Self { priority, name, id })
     }
 }
 
-/// A TaskExecutor acts as a callback which executes the job associated with a task.
-trait TaskExecutor<R: Resource> {
+/// Implementers of `Executable` acts as a callback which executes the job associated with a task.
+trait Executable<R: Resource> {
     /// `execute` executes a task's job. `preempt.preempt_now()` should be polled as appropriate,
     /// and execution should terminate if it returns true. Tasks which are no preemptible need not
     /// ever check for preemption.
     fn execute(&self, preempt: &dyn Preemption<R>);
 
-    /// Returns true if the job associated with this `TaskExecutor` can be preempted. Executors
+    /// Returns true if the job associated with this `Executable` can be preempted. `Executable`s
     /// which return `true` should periodically poll for preemption while executing.
-    fn preemptible(&self) -> bool;
+    fn is_preemptible(&self) -> bool;
 }
 
-// #[derive(Clone)]
+#[derive(Clone)]
 pub struct Task<'a, R: Resource> {
-    ident: TaskIdent,
     /// These are the resources for which the `Task` has been requested to be scheduled,
     /// in order of preference. It is guaranteed that the `Task` will be scheduled on only one of these.
-    resources: Vec<R>,
-    executor: &'a dyn TaskExecutor<R>,
+    executable: &'a dyn Executable<R>,
 }
 
 pub struct FSScheduler<'a, R: Resource> {
     root: PathBuf,
+    /// A given `Task` (identified uniquely by a `TaskIdent`) may have multiple `TaskFile`s associated,
+    /// one per `Resource` for which it is currently scheduled (but only one `Resource` will eventually be assigned).
     task_files: HashMap<TaskIdent, HashSet<TaskFile>>,
+    /// Each `Task` (identified uniquely by a `TaskIdent`) is protected by a `Mutex`.
     own_tasks: HashMap<TaskIdent, Mutex<&'a Task<'a, R>>>,
+    ident_counter: usize,
     _r: PhantomData<R>,
 }
 
 impl<'a, R: Resource> FSScheduler<'a, R> {
-    fn new(root: PathBuf) -> Result<Self, Error> {
+    pub fn new(root: PathBuf) -> Result<Self, Error> {
         create_dir_all(&root)?;
         Ok(Self {
             root,
             task_files: Default::default(),
             own_tasks: Default::default(),
             _r: PhantomData,
+            ident_counter: 0,
         })
     }
-    pub fn schedule(&mut self, task: &'a Task<'a, R>) -> Result<(), Error> {
-        for resource in task.resources.iter() {
-            self.schedule_for_resource(&task, resource);
-        }
-        Ok(())
+    pub fn new_ident(&mut self, priority: Priority, name: String) -> TaskIdent {
+        let id = self.ident_counter;
+        self.ident_counter += 1;
+        TaskIdent { priority, name, id }
     }
-    pub fn schedule_for_resource(
+    pub fn schedule(
         &mut self,
+        task_ident: TaskIdent,
         task: &'a Task<'a, R>,
-        resource: &R,
+        resources: &[R],
     ) -> Result<(), Error> {
-        let dir = self.root.join(resource.id());
-        create_dir_all(&dir);
-        let task_file = TaskFile::create(&dir, &task.ident.clone())?;
-        self.task_files
-            .entry(task.ident.clone())
-            .or_insert(Default::default())
-            .insert(task_file);
-        self.own_tasks.insert(task.ident.clone(), Mutex::new(&task));
+        for resource in resources.iter() {
+            let dir = self.root.join(resource.dir_id());
+            create_dir_all(&dir)?;
+            let task_file = task_ident.enqueue_in_dir(&dir)?;
+            self.task_files
+                .entry(task_ident.clone())
+                .or_insert(Default::default())
+                .insert(task_file);
+            self.own_tasks.insert(task_ident.clone(), Mutex::new(&task));
+        }
         Ok(())
     }
 }
@@ -243,124 +226,153 @@ pub struct FSResourceScheduler<'a, R: Resource> {
     root_scheduler: FSScheduler<'a, R>,
     dir: PathBuf,
     resource: R,
-    previous: Option<TaskIdent>,
+    /// The previous 'next', and a count of how many times we have seen it as such.
+    previous: Option<(TaskIdent, usize)>,
 }
 
 impl<'a, R: Resource> FSResourceScheduler<'a, R> {
     pub fn lock(&self) -> Result<ResourceLock, Error> {
-        ResourceLock::lock(&self.dir, &self.resource)
+        ResourceLock::acquire(&self.dir, &self.resource)
     }
 
     pub fn handle_next(&mut self) -> Result<(), Error> {
         assert!(self.dir.is_dir(), "scheduler dir is not a directory.");
-        let mut ident_creations = fs::read_dir(&self.dir)?
+        let mut ident_data = fs::read_dir(&self.dir)?
             .map(|res| {
                 res.map(|e| {
                     // FIXME: unwraps
                     let metadata = e.metadata().unwrap();
                     let task_ident = TaskIdent::from_str(&e.file_name().to_str().unwrap()).unwrap();
-                    (task_ident, metadata.created().unwrap())
+                    let file = File::open(e.path()).unwrap();
+                    let locked = file.try_lock_exclusive().is_err();
+                    (task_ident, metadata.created().unwrap(), locked)
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
 
-        ident_creations.sort_by(|a, b| {
-            let priority_ordering = a.0.priority.partial_cmp(&b.0.priority).unwrap();
+        ident_data.sort_by(|(a_ident, a_create_date, _), (b_ident, b_create_date, _)| {
+            /// Sort first by (priority, creation date).
+            let priority_ordering = a_ident.priority.partial_cmp(&b_ident.priority).unwrap();
             match priority_ordering {
-                Ordering::Equal => a.1.partial_cmp(&b.1).unwrap(),
+                Ordering::Equal => a_create_date.partial_cmp(&b_create_date).unwrap(),
                 _ => priority_ordering,
             }
         });
 
-        let ident = if let Some((ident, _)) = ident_creations.get(0) {
-            ident
+        let (ident, locked) = if let Some((ident, _, locked)) = ident_data.get(0) {
+            (ident, *locked)
         } else {
             // If there was no `TaskIdent` found, nothing to do.
+            // Forget about anything we saw before.
             self.previous = None;
             return Ok(());
         };
+        let is_own = self.root_scheduler.own_tasks.get(ident).is_some();
 
-        match ident.process {
-            Process::Own => {
+        if is_own {
+            // Task is owned by this process.
+
+            let mut performed_task = false;
+            {
                 // Lock the task so a sibling won't remove it.
+                let mut guard_result = self
+                    .root_scheduler
+                    .own_tasks
+                    .get(ident)
+                    .expect("own task missing")
+                    .try_lock();
 
-                let mut performed_task = false;
+                if let Ok(ref mut guard) = guard_result {
+                    let task = &*guard;
+                    self.previous = None;
 
-                {
-                    let mut lock = self
-                        .root_scheduler
-                        .own_tasks
-                        .get(ident)
-                        .expect("own task missing")
-                        .try_lock();
+                    let mut to_destroy_later = None;
 
-                    if let Ok(ref mut mutex) = lock {
-                        let task = &*mutex; // TODO: clean it up.
-                        self.previous = None;
-
-                        // We have the lock for this task, so we may destroy the sibling TaskFiles.
-                        if let Some(all_task_files) = self.root_scheduler.task_files.get(ident) {
-                            // FIXME: unwrap
-                            all_task_files.iter().for_each(|task_file| {
-                                // Don't destroy this directory's task file until we are done performing the task
-                                if !task_file.path.starts_with(self.dir.clone()) {
-                                    task_file.destroy().unwrap();
-                                }
-                            });
-                        }
-
-                        self.perform_task(&task);
-                        performed_task = true;
-
-                        // Finally, destroy this taskfile too.
-
-                        // TODO: Destroy it.
-
-                        // And remove the task
-                        self.root_scheduler.task_files.remove(&ident);
-                    } else {
-                        // Task was already locked, which means this process has already assigned it to a different resource.
-                        // Do nothing and allow it to be cleaned up (removed from this queue) as part of that assignment.
+                    // We have the lock for this task, so we may destroy the sibling TaskFiles.
+                    if let Some(all_task_files) = self.root_scheduler.task_files.get(ident) {
+                        // FIXME: unwrap
+                        all_task_files.iter().for_each(|task_file| {
+                            // Don't destroy this directory's task file until we are done performing the task
+                            if !task_file.path.starts_with(self.dir.clone()) {
+                                task_file.destroy().unwrap();
+                            // TODO: check that destroy fails gracefully if already gone.
+                            } else {
+                                to_destroy_later = Some(task_file);
+                            }
+                        });
                     }
 
-                    // lock is dropped here
+                    self.perform_task(&task)?;
+                    // NOTE: We must defer removing from `self.own_tasks` because the map is borrowed in this scope above.
+                    performed_task = true;
+
+                    // Finally, destroy this `TaskFile`, too — assuming it is necessary.
+                    if let Some(task_file) = to_destroy_later {
+                        task_file.destroy().unwrap()
+                    };
+
+                    // And remove the task
+                    self.root_scheduler.task_files.remove(&ident);
+                } else {
+                    // Task `Mutex` was already locked, which means this process has already assigned it to a different resource.
+                    // Do nothing and allow it to be cleaned up (removed from this queue) as part of that assignment.
                 }
 
-                if performed_task {
-                    self.root_scheduler.own_tasks.remove(&ident);
-                }
+                // lock is dropped here
             }
-            Process::Other => {
-                if let Some(previous) = &self.previous {
-                    // The same task has been 'next up' for two turns, so it has forfeited its turn.
+
+            if performed_task {
+                // Now we can remove (see NOTE above).
+                self.root_scheduler.own_tasks.remove(&ident);
+            }
+        } else {
+            // Task is owned by another process.
+            if locked {
+                self.previous = None;
+            } else {
+                self.previous = match &self.previous {
+                    // The same unlocked task has been 'next up' for three turns, so it has forfeited its turn.
                     // Since we discovered this, it is our job to destroy it.
-                    // TODO: Should require one more round, since different will be on different schedules.
-                    //       worst-case behavior of out-of-sync schedules gives no time for the actual winner to act.
-                    let _ = TaskFile::try_destroy_for_ident(&self.dir, previous);
-                // If this fails, someone else may have seized the lock and done it for us.
-                } else {
-                    // Remember this ident, so we can destroy it if it's still next when we check again.
-                    self.previous = Some(ident.clone());
+                    // We need to see it three times, since different processes will be on different schedules.
+                    // Worst-case behavior of out-of-sync schedules gives no time for the actual winner to act.
+                    Some((previous, n)) if previous == ident && *n >= 2 => {
+                        // If this fails, someone else may have seized the lock and done it for us.
+                        previous.try_destroy(&self.dir)?;
+                        None
+                    }
+
+                    // Increment the count, so we can destroy this if we see it on top next time we check.
+                    Some((previous, n)) if previous == ident => Some((previous.clone(), n + 1)),
+
+                    // No match, forget.
+                    Some(_) => None,
+
+                    // Remember this ident,
+                    None => Some((ident.clone(), 1)),
                 }
             }
         }
-
         Ok(())
     }
 
-    fn perform_task(&self, task: &Task<R>) {
-        ResourceLock::lock(&self.dir, &self.resource);
-        task.executor.execute(self)
+    fn perform_task(&self, task: &Task<R>) -> Result<(), Error> {
+        self.lock()?;
+        task.executable.execute(self);
+        Ok(())
+        // Lock is dropped, and therefore released here, at end of scope.
     }
 }
 
 trait Preemption<R: Resource> {
     // Return true if task should be preempted now.
-    fn preempt_now(&self, _task: &Task<R>) -> bool;
+    // `Executable`s which are preemptible, must call this method.
+    fn should_preempt_now(&self, _task: &Task<R>) -> bool;
 }
 
 impl<'a, R: Resource> Preemption<R> for FSResourceScheduler<'a, R> {
-    fn preempt_now(&self, _task: &Task<R>) -> bool {
+    /// The current `Task` should be preempted if the high-priority lock has been acquired
+    /// by another `Task`.
+    fn should_preempt_now(&self, _task: &Task<R>) -> bool {
         todo!();
     }
 }
