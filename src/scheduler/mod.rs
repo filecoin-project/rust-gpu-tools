@@ -280,7 +280,8 @@ impl<'a, R: Resource> ResourceScheduler<'a, R> {
                         all_task_files.iter().for_each(|task_file| {
                             // Don't destroy this directory's task file until we are done performing the task
                             if !task_file.path.starts_with(self.dir.clone()) {
-                                task_file.destroy().unwrap();
+                                // We already hold the lock for all of our task files, so this should succeed.
+                                task_file.try_destroy().unwrap();
                             // TODO: check that destroy fails gracefully if already gone.
                             } else {
                                 to_destroy_later = Some(task_file);
@@ -294,7 +295,8 @@ impl<'a, R: Resource> ResourceScheduler<'a, R> {
 
                     // Finally, destroy this `TaskFile`, too — assuming it is necessary.
                     if let Some(task_file) = to_destroy_later {
-                        task_file.destroy().unwrap()
+                        // We already hold the lock for this task file, so this should succeed.
+                        task_file.try_destroy().unwrap()
                     };
 
                     // And remove the task
