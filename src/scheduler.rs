@@ -6,6 +6,7 @@ use fs2::FileExt;
 use log::debug;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, create_dir_all, remove_file, File};
@@ -14,8 +15,9 @@ use std::io::Error;
 use std::iter;
 use std::marker::PhantomData;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::str::FromStr;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Mutex};
 use std::thread;
 
 /// How often, in milliseconds, should we poll by default?
@@ -81,7 +83,7 @@ impl<'a, R: Resource> Task<'a, R> {
 }
 
 pub struct Scheduler<'a, R: Resource> {
-    scheduler_root: Arc<Mutex<SchedulerRoot<'a, R>>>,
+    scheduler_root: Rc<RefCell<SchedulerRoot<'a, R>>>,
     resource_schedulers: Vec<ResourceScheduler<'a, R>>,
     poll_interval: usize,
 }
@@ -94,7 +96,7 @@ impl<'a, R: 'a + Resource + Copy> Scheduler<'a, R> {
     pub fn new_with_poll_interval(root: PathBuf, poll_interval: usize) -> Result<Self, Error> {
         let scheduler = SchedulerRoot::new(root)?;
         Ok(Self {
-            scheduler_root: Arc::new(Mutex::new(scheduler)),
+            scheduler_root: Rc::new(RefCell::new(scheduler)),
             resource_schedulers: Default::default(),
             poll_interval,
         })
@@ -110,14 +112,9 @@ impl<'a, R: 'a + Resource + Copy> Scheduler<'a, R> {
         resources.iter().for_each(|r| {
             self.ensure_resource_scheduler(*r);
         });
-        let task_ident = self
-            .scheduler_root
-            .lock()
-            .unwrap()
-            .new_ident(priority, name);
+        let task_ident = self.scheduler_root.borrow_mut().new_ident(priority, name);
         self.scheduler_root
-            .lock()
-            .unwrap()
+            .borrow_mut()
             .schedule(task_ident, task, resources)
     }
 
@@ -144,12 +141,7 @@ impl<'a, R: 'a + Resource + Copy> Scheduler<'a, R> {
     }
 
     fn ensure_resource_scheduler(&mut self, resource: R) -> ResourceScheduler<'a, R> {
-        let dir = self
-            .scheduler_root
-            .lock()
-            .unwrap()
-            .root
-            .join(resource.dir_id());
+        let dir = self.scheduler_root.borrow().root.join(resource.dir_id());
         ResourceScheduler::new(self.scheduler_root.clone(), dir, resource)
     }
 }
@@ -278,7 +270,7 @@ struct SchedulerRoot<'a, R: Resource> {
     task_files: HashMap<TaskIdent, HashSet<TaskFile>>,
     /// Each `Task` (identified uniquely by a `TaskIdent`) is protected by a `Mutex`.
     own_tasks: HashMap<TaskIdent, Mutex<&'a Task<'a, R>>>,
-    children: Mutex<HashMap<String, ResourceScheduler<'a, R>>>,
+    children: RefCell<HashMap<String, ResourceScheduler<'a, R>>>,
     ident_counter: usize,
     _r: PhantomData<R>,
 }
@@ -321,7 +313,7 @@ impl<'a, R: Resource> SchedulerRoot<'a, R> {
 }
 
 struct ResourceScheduler<'a, R: Resource> {
-    root_scheduler: Arc<Mutex<SchedulerRoot<'a, R>>>,
+    root_scheduler: Rc<RefCell<SchedulerRoot<'a, R>>>,
     // root_scheduler: RefCell<Scheduler<'a, R>>,
     dir: PathBuf,
     resource: R,
@@ -331,7 +323,7 @@ struct ResourceScheduler<'a, R: Resource> {
 
 impl<'a, R: Resource> ResourceScheduler<'a, R> {
     fn new(
-        root_scheduler: Arc<Mutex<SchedulerRoot<'a, R>>>,
+        root_scheduler: Rc<RefCell<SchedulerRoot<'a, R>>>,
         // root_scheduler: RefCell<Scheduler<'a, R>>,
         dir: PathBuf,
         resource: R,
@@ -379,20 +371,14 @@ impl<'a, R: Resource> ResourceScheduler<'a, R> {
             self.previous = None;
             return Ok(());
         };
-        let is_own = self
-            .root_scheduler
-            .lock()
-            .unwrap()
-            .own_tasks
-            .get(ident)
-            .is_some();
+        let is_own = self.root_scheduler.borrow().own_tasks.get(ident).is_some();
 
         if is_own {
             // Task is owned by this process.
 
             let mut performed_task = false;
             {
-                let root_scheduler = self.root_scheduler.lock().unwrap();
+                let root_scheduler = self.root_scheduler.borrow();
                 // Lock the task so a sibling won't remove it.
                 let mut guard_result = root_scheduler
                     .own_tasks
@@ -430,11 +416,7 @@ impl<'a, R: Resource> ResourceScheduler<'a, R> {
                     };
 
                     // And remove the task
-                    self.root_scheduler
-                        .lock()
-                        .unwrap()
-                        .task_files
-                        .remove(&ident);
+                    self.root_scheduler.borrow_mut().task_files.remove(&ident);
                 } else {
                     // Task `Mutex` was already locked, which means this process has already assigned it to a different resource.
                     // Do nothing and allow it to be cleaned up (removed from this queue) as part of that assignment.
@@ -445,7 +427,7 @@ impl<'a, R: Resource> ResourceScheduler<'a, R> {
 
             if performed_task {
                 // Now we can remove (see NOTE above).
-                self.root_scheduler.lock().unwrap().own_tasks.remove(&ident);
+                self.root_scheduler.borrow_mut().own_tasks.remove(&ident);
             }
         } else {
             // Task is owned by another process.
