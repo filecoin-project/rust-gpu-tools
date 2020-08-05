@@ -29,11 +29,15 @@ impl TaskIdent {
     }
 
     pub(crate) fn enqueue_in_dir(&self, dir: &PathBuf) -> Result<TaskFile, Error> {
-        debug!("Enqueueing TaskFile");
+        debug!(
+            "Enqueueing TaskFile in queue {:?}: {}",
+            dir,
+            self.to_string()
+        );
         let path = self.path(dir);
         let file = File::create(path.clone())?;
         file.lock_exclusive()?;
-        debug!("Enqueued TaskFile");
+        debug!("Enqueued TaskFile in queue {:?}: {}", dir, self.to_string());
         Ok(TaskFile {
             file,
             path: path.to_path_buf(),
@@ -42,9 +46,20 @@ impl TaskIdent {
     pub(crate) fn try_destroy(&self, dir: &PathBuf) -> Result<(), Error> {
         let path = self.path(dir);
         let file = File::open(path.clone())?;
-        file.try_lock_exclusive()?;
-        remove_file(path)?;
-        debug!("Removing TaskFile from queue");
+        if file.try_lock_exclusive().is_err() {
+            debug!(
+                "Not removing TaskFile from queue {:?}: {}",
+                dir,
+                self.to_string()
+            );
+        } else {
+            remove_file(path)?;
+            debug!(
+                "Removing TaskFile from queue {:?}: {}",
+                dir,
+                self.to_string()
+            );
+        };
         Ok(())
     }
 }
