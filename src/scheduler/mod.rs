@@ -4,14 +4,12 @@ use ::lazy_static::lazy_static;
 
 use self::task_ident::TaskIdent;
 use fs2::FileExt;
-use log::debug;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, create_dir_all, remove_file, File};
-use std::hash::{Hash, Hasher};
+use std::fs::{self, create_dir_all, File};
 use std::io::Error;
 use std::iter;
 use std::marker::PhantomData;
@@ -21,8 +19,9 @@ use std::str::FromStr;
 use std::sync::{mpsc, Mutex};
 use std::thread;
 
-use crate::scheduler::task_file::TaskFile;
+use self::{resource_lock::ResourceLock, task_file::TaskFile};
 
+mod resource_lock;
 mod task_file;
 mod task_ident;
 
@@ -152,34 +151,6 @@ impl<'a, R: 'a + Resource + Copy> Scheduler<'a, R> {
     }
 }
 
-#[derive(Debug)]
-struct ResourceLock {
-    /// ResourceLock holds a reference to lockfile.
-    file: File,
-    resource_name: String,
-}
-
-impl ResourceLock {
-    fn acquire(dir: &PathBuf, resource: &dyn Resource) -> Result<ResourceLock, Error> {
-        debug!("Acquiring lock for {}...", resource.name());
-        let lockfile_path = dir.join(LOCK_NAME);
-        let file = File::create(lockfile_path)?;
-        file.lock_exclusive()?;
-        debug!("Resource lock acquired for {}!", resource.name());
-        Ok(Self {
-            file,
-            resource_name: resource.name(),
-        })
-    }
-}
-
-impl Drop for ResourceLock {
-    fn drop(&mut self) {
-        // Lock will have been released when `file` is dropped.
-        debug!("Resource lock for {} released!", self.resource_name);
-    }
-}
-
 struct SchedulerRoot<'a, R: Resource> {
     root: PathBuf,
     /// A given `Task` (identified uniquely by a `TaskIdent`) may have multiple `TaskFile`s associated,
@@ -231,7 +202,6 @@ impl<'a, R: Resource> SchedulerRoot<'a, R> {
 
 struct ResourceScheduler<'a, R: Resource> {
     root_scheduler: Rc<RefCell<SchedulerRoot<'a, R>>>,
-    // root_scheduler: RefCell<Scheduler<'a, R>>,
     dir: PathBuf,
     resource: R,
     /// The previous 'next', and a count of how many times we have seen it as such.
@@ -239,12 +209,7 @@ struct ResourceScheduler<'a, R: Resource> {
 }
 
 impl<'a, R: Resource> ResourceScheduler<'a, R> {
-    fn new(
-        root_scheduler: Rc<RefCell<SchedulerRoot<'a, R>>>,
-        // root_scheduler: RefCell<Scheduler<'a, R>>,
-        dir: PathBuf,
-        resource: R,
-    ) -> Self {
+    fn new(root_scheduler: Rc<RefCell<SchedulerRoot<'a, R>>>, dir: PathBuf, resource: R) -> Self {
         Self {
             root_scheduler,
             dir,

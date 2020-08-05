@@ -1,6 +1,6 @@
 use log::debug;
-use std::fs::{self, create_dir_all, remove_file, File};
-use std::hash::{Hash, Hasher};
+use std::fs::{remove_file, File};
+use std::hash::Hasher;
 use std::io::Error;
 use std::path::PathBuf;
 

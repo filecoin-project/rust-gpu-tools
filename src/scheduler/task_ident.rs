@@ -1,4 +1,4 @@
-use std::fs::{self, create_dir_all, remove_file, File};
+use std::fs::{remove_file, File};
 use std::io::Error;
 use std::path::PathBuf;
 use std::str::FromStr;
