@@ -18,10 +18,11 @@ use std::str::FromStr;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
-/// How often, in milliseconds, should we poll?
+/// How often, in milliseconds, should we poll by default?
 const POLL_INTERVAL_MS: usize = 1000;
 const LOCK_NAME: &str = "resource.lock";
 
+/// Lower values have 'higher' priority.
 type Priority = usize;
 
 lazy_static! {
@@ -40,11 +41,124 @@ pub trait Resource {
     }
 }
 
+/// Implementers of `Executable` acts as a callback which executes the job associated with a task.
+pub trait Executable<R: Resource> {
+    /// `execute` executes a task's job. `preempt.should_preempt_now()` should be polled as appropriate,
+    /// and execution should terminate if it returns true. Tasks which are not preemptible need not
+    /// ever check for preemption.
+    fn execute(&self, preempt: &dyn Preemption<R>);
+
+    /// Returns true if the job associated with this `Executable` can be preempted. `Executable`s
+    /// which return `true` should periodically poll for preemption while executing.
+    fn is_preemptible(&self) -> bool;
+}
+
+trait Preemption<R: Resource> {
+    // Return true if task should be preempted now.
+    // `Executable`s which are preemptible, must call this method.
+    fn should_preempt_now(&self, _task: &Task<R>) -> bool;
+}
+
+impl<'a, R: Resource> Preemption<R> for ResourceScheduler<'a, R> {
+    /// The current `Task` should be preempted if the high-priority lock has been acquired
+    /// by another `Task`.
+    fn should_preempt_now(&self, _task: &Task<R>) -> bool {
+        todo!();
+    }
+}
+
+#[derive(Clone)]
+pub struct Task<'a, R: Resource> {
+    /// These are the resources for which the `Task` has been requested to be scheduled,
+    /// in order of preference. It is guaranteed that the `Task` will be scheduled on only one of these.
+    executable: &'a dyn Executable<R>,
+}
+
+impl<'a, R: Resource> Task<'a, R> {
+    pub fn new(executable: &'a dyn Executable<R>) -> Self {
+        Self { executable }
+    }
+}
+
+pub struct Scheduler<'a, R: Resource> {
+    scheduler_root: Arc<Mutex<SchedulerRoot<'a, R>>>,
+    resource_schedulers: Vec<ResourceScheduler<'a, R>>,
+    poll_interval: usize,
+}
+
+impl<'a, R: 'a + Resource + Copy> Scheduler<'a, R> {
+    pub fn new(root: PathBuf) -> Result<Self, Error> {
+        Self::new_with_poll_interval(root, POLL_INTERVAL_MS)
+    }
+
+    pub fn new_with_poll_interval(root: PathBuf, poll_interval: usize) -> Result<Self, Error> {
+        let scheduler = SchedulerRoot::new(root)?;
+        Ok(Self {
+            scheduler_root: Arc::new(Mutex::new(scheduler)),
+            resource_schedulers: Default::default(),
+            poll_interval,
+        })
+    }
+
+    pub fn schedule(
+        &mut self,
+        priority: usize,
+        name: String,
+        task: &'a Task<'a, R>,
+        resources: &[R],
+    ) -> Result<(), Error> {
+        resources.iter().for_each(|r| {
+            self.ensure_resource_scheduler(*r);
+        });
+        let task_ident = self
+            .scheduler_root
+            .lock()
+            .unwrap()
+            .new_ident(priority, name);
+        self.scheduler_root
+            .lock()
+            .unwrap()
+            .schedule(task_ident, task, resources)
+    }
+
+    pub fn start(root: PathBuf) -> Result<mpsc::Sender<bool>, Error> {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut scheduler = Self::new(root).unwrap();
+
+            loop {
+                for s in scheduler.resource_schedulers.iter_mut() {
+                    if !rx.try_recv().is_err() {
+                        break;
+                    };
+                    s.handle_next().unwrap(); // FIXME
+                }
+            }
+        });
+
+        Ok(tx)
+    }
+
+    pub fn stop(control_chan: mpsc::Sender<bool>) -> Result<(), mpsc::SendError<bool>> {
+        Ok(control_chan.send(true)?)
+    }
+
+    fn ensure_resource_scheduler(&mut self, resource: R) -> ResourceScheduler<'a, R> {
+        let dir = self
+            .scheduler_root
+            .lock()
+            .unwrap()
+            .root
+            .join(resource.dir_id());
+        ResourceScheduler::new(self.scheduler_root.clone(), dir, resource)
+    }
+}
+
 #[derive(Debug)]
-pub struct ResourceLock {
+struct ResourceLock {
     /// ResourceLock holds a reference to lockfile.
     file: File,
-    name: String,
+    resource_name: String,
 }
 
 impl ResourceLock {
@@ -56,7 +170,7 @@ impl ResourceLock {
         debug!("Resource lock acquired for {}!", resource.name());
         Ok(Self {
             file,
-            name: resource.name(),
+            resource_name: resource.name(),
         })
     }
 }
@@ -64,12 +178,12 @@ impl ResourceLock {
 impl Drop for ResourceLock {
     fn drop(&mut self) {
         // Lock will have been released when `file` is dropped.
-        debug!("Resource lock for {} released!", self.name);
+        debug!("Resource lock for {} released!", self.resource_name);
     }
 }
 
 #[derive(Debug)]
-pub struct TaskFile {
+struct TaskFile {
     file: File,
     path: PathBuf,
 }
@@ -97,14 +211,14 @@ impl TaskFile {
 }
 
 #[derive(Clone, Eq, PartialEq, Hash)]
-pub struct TaskIdent {
+struct TaskIdent {
     priority: Priority,
     name: String,
     id: usize,
 }
 
 /// `TaskIdent`s must uniquely identify `Task`s, so must be created with
-/// `FSScheduler::new_ident` — which manages the id counter.
+/// `SchedulerRoot::new_ident` — which manages the id counter.
 impl TaskIdent {
     fn path(&self, dir: &PathBuf) -> PathBuf {
         let filename = self.to_string();
@@ -157,103 +271,20 @@ impl FromStr for TaskIdent {
     }
 }
 
-/// Implementers of `Executable` acts as a callback which executes the job associated with a task.
-trait Executable<R: Resource> {
-    /// `execute` executes a task's job. `preempt.preempt_now()` should be polled as appropriate,
-    /// and execution should terminate if it returns true. Tasks which are no preemptible need not
-    /// ever check for preemption.
-    fn execute(&self, preempt: &dyn Preemption<R>);
-
-    /// Returns true if the job associated with this `Executable` can be preempted. `Executable`s
-    /// which return `true` should periodically poll for preemption while executing.
-    fn is_preemptible(&self) -> bool;
-}
-
-#[derive(Clone)]
-pub struct Task<'a, R: Resource> {
-    /// These are the resources for which the `Task` has been requested to be scheduled,
-    /// in order of preference. It is guaranteed that the `Task` will be scheduled on only one of these.
-    executable: &'a dyn Executable<R>,
-}
-
-pub struct Scheduler<'a, R: Resource> {
-    scheduler: Arc<Mutex<FSScheduler<'a, R>>>,
-    resource_schedulers: Vec<FSResourceScheduler<'a, R>>,
-    poll_interval: usize,
-}
-
-impl<'a, R: 'a + Resource + Copy> Scheduler<'a, R> {
-    pub fn new(root: PathBuf) -> Result<Self, Error> {
-        Self::new_with_poll_interval(root, POLL_INTERVAL_MS)
-    }
-
-    pub fn new_with_poll_interval(root: PathBuf, poll_interval: usize) -> Result<Self, Error> {
-        let scheduler = FSScheduler::new(root)?;
-        Ok(Self {
-            scheduler: Arc::new(Mutex::new(scheduler)),
-            resource_schedulers: Default::default(),
-            poll_interval,
-        })
-    }
-
-    pub fn schedule(
-        &mut self,
-        task_ident: TaskIdent,
-        task: &'a Task<'a, R>,
-        resources: &[R],
-    ) -> Result<(), Error> {
-        resources.iter().for_each(|r| {
-            self.ensure_resource_scheduler(*r);
-        });
-
-        self.scheduler
-            .lock()
-            .unwrap()
-            .schedule(task_ident, task, resources)
-    }
-
-    pub fn start(root: PathBuf) -> Result<mpsc::Sender<bool>, Error> {
-        let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
-            let mut scheduler = Self::new(root).unwrap();
-
-            loop {
-                for s in scheduler.resource_schedulers.iter_mut() {
-                    if !rx.try_recv().is_err() {
-                        break;
-                    };
-                    s.handle_next();
-                }
-            }
-        });
-
-        Ok(tx)
-    }
-
-    pub fn stop(control_chan: mpsc::Sender<bool>) {
-        control_chan.send(true);
-    }
-
-    fn ensure_resource_scheduler(&mut self, resource: R) -> FSResourceScheduler<'a, R> {
-        let dir = self.scheduler.lock().unwrap().root.join(resource.dir_id());
-        FSResourceScheduler::new(self.scheduler.clone(), dir, resource)
-    }
-}
-
-pub struct FSScheduler<'a, R: Resource> {
+struct SchedulerRoot<'a, R: Resource> {
     root: PathBuf,
     /// A given `Task` (identified uniquely by a `TaskIdent`) may have multiple `TaskFile`s associated,
     /// one per `Resource` for which it is currently scheduled (but only one `Resource` will eventually be assigned).
     task_files: HashMap<TaskIdent, HashSet<TaskFile>>,
     /// Each `Task` (identified uniquely by a `TaskIdent`) is protected by a `Mutex`.
     own_tasks: HashMap<TaskIdent, Mutex<&'a Task<'a, R>>>,
-    children: Mutex<HashMap<String, FSResourceScheduler<'a, R>>>,
+    children: Mutex<HashMap<String, ResourceScheduler<'a, R>>>,
     ident_counter: usize,
     _r: PhantomData<R>,
 }
 
-impl<'a, R: Resource> FSScheduler<'a, R> {
-    pub fn new(root: PathBuf) -> Result<Self, Error> {
+impl<'a, R: Resource> SchedulerRoot<'a, R> {
+    fn new(root: PathBuf) -> Result<Self, Error> {
         create_dir_all(&root)?;
         Ok(Self {
             root,
@@ -264,7 +295,7 @@ impl<'a, R: Resource> FSScheduler<'a, R> {
             _r: PhantomData,
         })
     }
-    pub fn new_ident(&mut self, priority: Priority, name: String) -> TaskIdent {
+    fn new_ident(&mut self, priority: Priority, name: String) -> TaskIdent {
         let id = self.ident_counter;
         self.ident_counter += 1;
         TaskIdent { priority, name, id }
@@ -289,8 +320,8 @@ impl<'a, R: Resource> FSScheduler<'a, R> {
     }
 }
 
-pub struct FSResourceScheduler<'a, R: Resource> {
-    root_scheduler: Arc<Mutex<FSScheduler<'a, R>>>,
+struct ResourceScheduler<'a, R: Resource> {
+    root_scheduler: Arc<Mutex<SchedulerRoot<'a, R>>>,
     // root_scheduler: RefCell<Scheduler<'a, R>>,
     dir: PathBuf,
     resource: R,
@@ -298,9 +329,9 @@ pub struct FSResourceScheduler<'a, R: Resource> {
     previous: Option<(TaskIdent, usize)>,
 }
 
-impl<'a, R: Resource> FSResourceScheduler<'a, R> {
-    pub fn new(
-        root_scheduler: Arc<Mutex<FSScheduler<'a, R>>>,
+impl<'a, R: Resource> ResourceScheduler<'a, R> {
+    fn new(
+        root_scheduler: Arc<Mutex<SchedulerRoot<'a, R>>>,
         // root_scheduler: RefCell<Scheduler<'a, R>>,
         dir: PathBuf,
         resource: R,
@@ -312,11 +343,11 @@ impl<'a, R: Resource> FSResourceScheduler<'a, R> {
             previous: None,
         }
     }
-    pub fn lock(&self) -> Result<ResourceLock, Error> {
+    fn lock(&self) -> Result<ResourceLock, Error> {
         ResourceLock::acquire(&self.dir, &self.resource)
     }
 
-    pub fn handle_next(&mut self) -> Result<(), Error> {
+    fn handle_next(&mut self) -> Result<(), Error> {
         assert!(self.dir.is_dir(), "scheduler dir is not a directory.");
         let mut ident_data = fs::read_dir(&self.dir)?
             .map(|res| {
@@ -448,22 +479,9 @@ impl<'a, R: Resource> FSResourceScheduler<'a, R> {
 
     fn perform_task(&self, task: &Task<R>) -> Result<(), Error> {
         let _lock = self.lock()?;
+        // Pass `self` so `Executable` can call `should_preempt_now` on it if needed.
         task.executable.execute(self);
         Ok(())
         // Lock is dropped, and therefore released here, at end of scope.
-    }
-}
-
-trait Preemption<R: Resource> {
-    // Return true if task should be preempted now.
-    // `Executable`s which are preemptible, must call this method.
-    fn should_preempt_now(&self, _task: &Task<R>) -> bool;
-}
-
-impl<'a, R: Resource> Preemption<R> for FSResourceScheduler<'a, R> {
-    /// The current `Task` should be preempted if the high-priority lock has been acquired
-    /// by another `Task`.
-    fn should_preempt_now(&self, _task: &Task<R>) -> bool {
-        todo!();
     }
 }
