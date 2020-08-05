@@ -15,7 +15,8 @@ use std::iter;
 use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Mutex;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 
 /// How often, in milliseconds, should we poll?
 const POLL_INTERVAL_MS: usize = 1000;
@@ -175,6 +176,70 @@ pub struct Task<'a, R: Resource> {
     executable: &'a dyn Executable<R>,
 }
 
+pub struct Scheduler<'a, R: Resource> {
+    scheduler: Arc<Mutex<FSScheduler<'a, R>>>,
+    resource_schedulers: Vec<FSResourceScheduler<'a, R>>,
+    poll_interval: usize,
+}
+
+impl<'a, R: 'a + Resource + Copy> Scheduler<'a, R> {
+    pub fn new(root: PathBuf) -> Result<Self, Error> {
+        Self::new_with_poll_interval(root, POLL_INTERVAL_MS)
+    }
+
+    pub fn new_with_poll_interval(root: PathBuf, poll_interval: usize) -> Result<Self, Error> {
+        let scheduler = FSScheduler::new(root)?;
+        Ok(Self {
+            scheduler: Arc::new(Mutex::new(scheduler)),
+            resource_schedulers: Default::default(),
+            poll_interval,
+        })
+    }
+
+    pub fn schedule(
+        &mut self,
+        task_ident: TaskIdent,
+        task: &'a Task<'a, R>,
+        resources: &[R],
+    ) -> Result<(), Error> {
+        resources.iter().for_each(|r| {
+            self.ensure_resource_scheduler(*r);
+        });
+
+        self.scheduler
+            .lock()
+            .unwrap()
+            .schedule(task_ident, task, resources)
+    }
+
+    pub fn start(root: PathBuf) -> Result<mpsc::Sender<bool>, Error> {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut scheduler = Self::new(root).unwrap();
+
+            loop {
+                for s in scheduler.resource_schedulers.iter_mut() {
+                    if !rx.try_recv().is_err() {
+                        break;
+                    };
+                    s.handle_next();
+                }
+            }
+        });
+
+        Ok(tx)
+    }
+
+    pub fn stop(control_chan: mpsc::Sender<bool>) {
+        control_chan.send(true);
+    }
+
+    fn ensure_resource_scheduler(&mut self, resource: R) -> FSResourceScheduler<'a, R> {
+        let dir = self.scheduler.lock().unwrap().root.join(resource.dir_id());
+        FSResourceScheduler::new(self.scheduler.clone(), dir, resource)
+    }
+}
+
 pub struct FSScheduler<'a, R: Resource> {
     root: PathBuf,
     /// A given `Task` (identified uniquely by a `TaskIdent`) may have multiple `TaskFile`s associated,
@@ -182,6 +247,7 @@ pub struct FSScheduler<'a, R: Resource> {
     task_files: HashMap<TaskIdent, HashSet<TaskFile>>,
     /// Each `Task` (identified uniquely by a `TaskIdent`) is protected by a `Mutex`.
     own_tasks: HashMap<TaskIdent, Mutex<&'a Task<'a, R>>>,
+    children: Mutex<HashMap<String, FSResourceScheduler<'a, R>>>,
     ident_counter: usize,
     _r: PhantomData<R>,
 }
@@ -193,8 +259,9 @@ impl<'a, R: Resource> FSScheduler<'a, R> {
             root,
             task_files: Default::default(),
             own_tasks: Default::default(),
-            _r: PhantomData,
+            children: Default::default(),
             ident_counter: 0,
+            _r: PhantomData,
         })
     }
     pub fn new_ident(&mut self, priority: Priority, name: String) -> TaskIdent {
@@ -202,7 +269,7 @@ impl<'a, R: Resource> FSScheduler<'a, R> {
         self.ident_counter += 1;
         TaskIdent { priority, name, id }
     }
-    pub fn schedule(
+    fn schedule(
         &mut self,
         task_ident: TaskIdent,
         task: &'a Task<'a, R>,
@@ -223,7 +290,8 @@ impl<'a, R: Resource> FSScheduler<'a, R> {
 }
 
 pub struct FSResourceScheduler<'a, R: Resource> {
-    root_scheduler: FSScheduler<'a, R>,
+    root_scheduler: Arc<Mutex<FSScheduler<'a, R>>>,
+    // root_scheduler: RefCell<Scheduler<'a, R>>,
     dir: PathBuf,
     resource: R,
     /// The previous 'next', and a count of how many times we have seen it as such.
@@ -231,6 +299,19 @@ pub struct FSResourceScheduler<'a, R: Resource> {
 }
 
 impl<'a, R: Resource> FSResourceScheduler<'a, R> {
+    pub fn new(
+        root_scheduler: Arc<Mutex<FSScheduler<'a, R>>>,
+        // root_scheduler: RefCell<Scheduler<'a, R>>,
+        dir: PathBuf,
+        resource: R,
+    ) -> Self {
+        Self {
+            root_scheduler,
+            dir,
+            resource,
+            previous: None,
+        }
+    }
     pub fn lock(&self) -> Result<ResourceLock, Error> {
         ResourceLock::acquire(&self.dir, &self.resource)
     }
@@ -251,7 +332,7 @@ impl<'a, R: Resource> FSResourceScheduler<'a, R> {
             .collect::<Result<Vec<_>, Error>>()?;
 
         ident_data.sort_by(|(a_ident, a_create_date, _), (b_ident, b_create_date, _)| {
-            /// Sort first by (priority, creation date).
+            // Sort first by (priority, creation date).
             let priority_ordering = a_ident.priority.partial_cmp(&b_ident.priority).unwrap();
             match priority_ordering {
                 Ordering::Equal => a_create_date.partial_cmp(&b_create_date).unwrap(),
@@ -267,16 +348,22 @@ impl<'a, R: Resource> FSResourceScheduler<'a, R> {
             self.previous = None;
             return Ok(());
         };
-        let is_own = self.root_scheduler.own_tasks.get(ident).is_some();
+        let is_own = self
+            .root_scheduler
+            .lock()
+            .unwrap()
+            .own_tasks
+            .get(ident)
+            .is_some();
 
         if is_own {
             // Task is owned by this process.
 
             let mut performed_task = false;
             {
+                let root_scheduler = self.root_scheduler.lock().unwrap();
                 // Lock the task so a sibling won't remove it.
-                let mut guard_result = self
-                    .root_scheduler
+                let mut guard_result = root_scheduler
                     .own_tasks
                     .get(ident)
                     .expect("own task missing")
@@ -289,7 +376,7 @@ impl<'a, R: Resource> FSResourceScheduler<'a, R> {
                     let mut to_destroy_later = None;
 
                     // We have the lock for this task, so we may destroy the sibling TaskFiles.
-                    if let Some(all_task_files) = self.root_scheduler.task_files.get(ident) {
+                    if let Some(all_task_files) = root_scheduler.task_files.get(ident) {
                         // FIXME: unwrap
                         all_task_files.iter().for_each(|task_file| {
                             // Don't destroy this directory's task file until we are done performing the task
@@ -312,7 +399,11 @@ impl<'a, R: Resource> FSResourceScheduler<'a, R> {
                     };
 
                     // And remove the task
-                    self.root_scheduler.task_files.remove(&ident);
+                    self.root_scheduler
+                        .lock()
+                        .unwrap()
+                        .task_files
+                        .remove(&ident);
                 } else {
                     // Task `Mutex` was already locked, which means this process has already assigned it to a different resource.
                     // Do nothing and allow it to be cleaned up (removed from this queue) as part of that assignment.
@@ -323,7 +414,7 @@ impl<'a, R: Resource> FSResourceScheduler<'a, R> {
 
             if performed_task {
                 // Now we can remove (see NOTE above).
-                self.root_scheduler.own_tasks.remove(&ident);
+                self.root_scheduler.lock().unwrap().own_tasks.remove(&ident);
             }
         } else {
             // Task is owned by another process.
@@ -356,7 +447,7 @@ impl<'a, R: Resource> FSResourceScheduler<'a, R> {
     }
 
     fn perform_task(&self, task: &Task<R>) -> Result<(), Error> {
-        self.lock()?;
+        let _lock = self.lock()?;
         task.executable.execute(self);
         Ok(())
         // Lock is dropped, and therefore released here, at end of scope.
