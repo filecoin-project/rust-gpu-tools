@@ -1,3 +1,4 @@
+use fs2::FileExt;
 use log::debug;
 use std::fs::{remove_file, File};
 use std::hash::Hasher;
@@ -25,9 +26,18 @@ impl std::hash::Hash for TaskFile {
 }
 
 impl TaskFile {
-    pub(crate) fn destroy(&self) -> Result<(), Error> {
-        remove_file(self.path.clone())?;
-        debug!("Removing TaskFile from queue");
+    /// Destroy the underlying file if it can be locked immediately.
+    pub(crate) fn try_destroy(&self) -> Result<(), Error> {
+        let file = File::open(self.path.clone())?;
+        if file.try_lock_exclusive().is_err() {
+            debug!(
+                "Not removing TaskFile from queue: {:?}! (Could not acquire lock.)",
+                file
+            );
+        } else {
+            remove_file(self.path.clone())?;
+            debug!("Removing TaskFile from queue: {:?}", file);
+        }
         Ok(())
     }
 }

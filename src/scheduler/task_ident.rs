@@ -1,10 +1,9 @@
+use fs2::FileExt;
+use log::debug;
 use std::fs::{remove_file, File};
 use std::io::Error;
 use std::path::PathBuf;
 use std::str::FromStr;
-
-use fs2::FileExt;
-use log::debug;
 
 use super::task_file::TaskFile;
 use super::{Priority, PROCESS_ID};
