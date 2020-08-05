@@ -2,6 +2,7 @@ extern crate rand;
 
 use ::lazy_static::lazy_static;
 
+use self::task_ident::TaskIdent;
 use fs2::FileExt;
 use log::debug;
 use rand::distributions::Alphanumeric;
@@ -19,6 +20,11 @@ use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::{mpsc, Mutex};
 use std::thread;
+
+use crate::scheduler::task_file::TaskFile;
+
+mod task_file;
+mod task_ident;
 
 /// How often, in milliseconds, should we poll by default?
 const POLL_INTERVAL_MS: usize = 1000;
@@ -55,7 +61,7 @@ pub trait Executable<R: Resource> {
     fn is_preemptible(&self) -> bool;
 }
 
-trait Preemption<R: Resource> {
+pub trait Preemption<R: Resource> {
     // Return true if task should be preempted now.
     // `Executable`s which are preemptible, must call this method.
     fn should_preempt_now(&self, _task: &Task<R>) -> bool;
@@ -174,95 +180,6 @@ impl Drop for ResourceLock {
     }
 }
 
-#[derive(Debug)]
-struct TaskFile {
-    file: File,
-    path: PathBuf,
-}
-
-impl PartialEq for TaskFile {
-    fn eq(&self, other: &Self) -> bool {
-        self.path.eq(&other.path)
-    }
-}
-
-impl Eq for TaskFile {}
-
-impl std::hash::Hash for TaskFile {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.path.hash(state)
-    }
-}
-
-impl TaskFile {
-    fn destroy(&self) -> Result<(), Error> {
-        remove_file(self.path.clone())?;
-        debug!("Removing TaskFile from queue");
-        Ok(())
-    }
-}
-
-#[derive(Clone, Eq, PartialEq, Hash)]
-struct TaskIdent {
-    priority: Priority,
-    name: String,
-    id: usize,
-}
-
-/// `TaskIdent`s must uniquely identify `Task`s, so must be created with
-/// `SchedulerRoot::new_ident` — which manages the id counter.
-impl TaskIdent {
-    fn path(&self, dir: &PathBuf) -> PathBuf {
-        let filename = self.to_string();
-        dir.join(filename)
-    }
-
-    fn enqueue_in_dir(&self, dir: &PathBuf) -> Result<TaskFile, Error> {
-        debug!("Enqueueing TaskFile");
-        let path = self.path(dir);
-        let file = File::create(path.clone())?;
-        file.lock_exclusive()?;
-        debug!("Enqueued TaskFile");
-        Ok(TaskFile {
-            file,
-            path: path.to_path_buf(),
-        })
-    }
-    fn try_destroy(&self, dir: &PathBuf) -> Result<(), Error> {
-        let path = self.path(dir);
-        let file = File::open(path.clone())?;
-        file.try_lock_exclusive()?;
-        remove_file(path)?;
-        debug!("Removing TaskFile from queue");
-        Ok(())
-    }
-}
-
-impl ToString for TaskIdent {
-    fn to_string(&self) -> String {
-        format!(
-            "{priority}-{process}-{name}-{id}",
-            priority = self.priority,
-            process = *PROCESS_ID,
-            name = self.name,
-            id = self.id,
-        )
-    }
-}
-
-impl FromStr for TaskIdent {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts: Vec<_> = s.split("-").collect();
-        let priority: Priority = parts.get(0).map(|s| s.parse().unwrap()).unwrap();
-        // Ignore the 'process' segment.
-        let name = parts.get(2).unwrap_or(&"").to_string();
-        let id = parts.get(3).unwrap_or(&"0").parse().unwrap_or(0); // FIXME: How should we actually handle a bad identifier string?
-        Ok(Self { priority, name, id })
-    }
-}
-
 struct SchedulerRoot<'a, R: Resource> {
     root: PathBuf,
     /// A given `Task` (identified uniquely by a `TaskIdent`) may have multiple `TaskFile`s associated,
@@ -290,7 +207,7 @@ impl<'a, R: Resource> SchedulerRoot<'a, R> {
     fn new_ident(&mut self, priority: Priority, name: String) -> TaskIdent {
         let id = self.ident_counter;
         self.ident_counter += 1;
-        TaskIdent { priority, name, id }
+        TaskIdent::new(priority, name, id)
     }
     fn schedule(
         &mut self,
