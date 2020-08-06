@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use fs2::FileExt;
 use log::debug;
 
-use super::{Resource, LOCK_NAME};
+use super::Resource;
+
+const LOCK_NAME: &str = "resource.lock";
 
 #[derive(Debug)]
 pub(crate) struct ResourceLock {
