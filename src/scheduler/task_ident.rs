@@ -18,8 +18,12 @@ pub(crate) struct TaskIdent {
 /// `TaskIdent`s must uniquely identify `Task`s, so must be created with
 /// `SchedulerRoot::new_ident` — which manages the id counter.
 impl TaskIdent {
-    pub(crate) fn new(priority: Priority, name: String, id: usize) -> Self {
-        Self { priority, name, id }
+    pub(crate) fn new(priority: Priority, name: &str, id: usize) -> Self {
+        Self {
+            priority,
+            name: name.to_string(),
+            id,
+        }
     }
 
     fn path(&self, dir: &PathBuf) -> PathBuf {
@@ -79,11 +83,26 @@ impl FromStr for TaskIdent {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // TODO: Refactor this error handling (but preserve the behavior).
         let parts: Vec<_> = s.split("-").collect();
-        let priority: Priority = parts.get(0).map(|s| s.parse().unwrap()).unwrap();
-        // Ignore the 'process' segment.
+        let priority: Priority = if let Some(p) = parts.get(0).map(|s| s.parse().ok()) {
+            if let Some(p2) = p {
+                p2
+            } else {
+                return Err(Error::new(std::io::ErrorKind::InvalidInput, s));
+            }
+        } else {
+            return Err(Error::new(std::io::ErrorKind::InvalidInput, s));
+        };
         let name = parts.get(2).unwrap_or(&"").to_string();
-        let id = parts.get(3).unwrap_or(&"0").parse().unwrap_or(0); // FIXME: How should we actually handle a bad identifier string?
-        Ok(Self { priority, name, id })
+        if let Some(id1) = parts.get(3).map(|s| s.parse().ok()) {
+            if let Some(id) = id1 {
+                Ok(Self { priority, name, id })
+            } else {
+                return Err(Error::new(std::io::ErrorKind::InvalidInput, s));
+            }
+        } else {
+            return Err(Error::new(std::io::ErrorKind::InvalidInput, s));
+        }
     }
 }

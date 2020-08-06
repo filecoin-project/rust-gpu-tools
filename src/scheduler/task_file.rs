@@ -40,4 +40,9 @@ impl TaskFile {
         }
         Ok(())
     }
+
+    pub(crate) fn destroy(&self) -> Result<(), Error> {
+        remove_file(self.path.clone())?;
+        Ok(())
+    }
 }
