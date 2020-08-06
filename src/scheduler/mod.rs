@@ -57,7 +57,7 @@ pub trait Resource {
 
 pub struct Scheduler<'a, R: Resource> {
     scheduler_root: Arc<Mutex<SchedulerRoot<'a, R>>>,
-    resource_schedulers: Vec<ResourceScheduler<'a, R>>,
+    resource_schedulers: HashMap<PathBuf, ResourceScheduler<'a, R>>,
     control_chan: Option<mpsc::Sender<()>>,
     poll_interval: u64,
 }
@@ -86,7 +86,7 @@ impl<'a, R: 'a + Resource + Copy + Send> Scheduler<'a, R> {
                 if should_stop() {
                     break;
                 };
-                for s in scheduler.lock().unwrap().resource_schedulers.iter_mut() {
+                for (_, s) in scheduler.lock().unwrap().resource_schedulers.iter_mut() {
                     if should_stop() {
                         break;
                     };
@@ -136,10 +136,10 @@ impl<'a, R: 'a + Resource + Copy + Send> Scheduler<'a, R> {
             .unwrap()
             .root
             .join(resource.dir_id());
-
-        let rs = ResourceScheduler::new(self.scheduler_root.clone(), dir, resource);
-        // FIXME: only add if needed.
-        self.resource_schedulers.push(rs);
+        if !self.resource_schedulers.contains_key(&dir) {
+            let rs = ResourceScheduler::new(self.scheduler_root.clone(), dir.clone(), resource);
+            self.resource_schedulers.insert(dir, rs);
+        }
     }
 }
 
