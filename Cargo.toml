@@ -20,6 +20,9 @@ lazy_static = "1.4.0"
 log = "0.4.8"
 rand = "0.5.0"
 
+# [dev-dependencies]
+tempfile = "3"
+
 [features]
 default = ["scheduler"]
 scheduler = ["fs2"]
