@@ -30,7 +30,6 @@ mod task_ident;
 
 /// How often, in milliseconds, should we poll by default?
 const POLL_INTERVAL_MS: u64 = 100;
-const LOCK_NAME: &str = "resource.lock";
 
 /// Lower values have 'higher' priority.
 type Priority = usize;
@@ -52,7 +51,7 @@ pub trait Resource {
 }
 
 /// Implementers of `Executable` act as a callback which executes the job associated with a task.
-pub trait Executable<R: Resource + Clone> {
+pub trait Executable<R: Resource> {
     /// `execute` executes a task's job. `preempt.should_preempt_now()` should be polled as appropriate,
     /// and execution should terminate if it returns true. Tasks which are not preemptible need not
     /// ever check for preemption.
@@ -65,13 +64,13 @@ pub trait Executable<R: Resource + Clone> {
     }
 }
 
-pub trait Preemption<R: Resource + Clone> {
+pub trait Preemption<R: Resource> {
     // Return true if task should be preempted now.
     // `Executable`s which are preemptible, must call this method.
     fn should_preempt_now(&self, _task: &Task<R>) -> bool;
 }
 
-impl<'a, R: Resource + Clone> Preemption<R> for ResourceScheduler<'a, R> {
+impl<'a, R: Resource> Preemption<R> for ResourceScheduler<'a, R> {
     /// The current `Task` should be preempted if the high-priority lock has been acquired
     /// by another `Task`.
     fn should_preempt_now(&self, _task: &Task<R>) -> bool {
@@ -85,26 +84,26 @@ pub struct Task<'a, R: Resource> {
     executable: Box<&'a dyn Executable<R>>,
 }
 
-impl<'a, R: Resource> Task<'a, R> {
-    pub fn new(executable: Box<&'a dyn Executable<R>>) -> Self {
-        Self { executable }
-    }
-
-    fn clone_task(&self) -> Self {
+impl<'a, R: Resource> Clone for Task<'a, R> {
+    fn clone(&self) -> Self {
         Self {
             executable: Box::new(*self.executable),
         }
     }
 }
 
-pub struct Scheduler<'a, R: Resource + Clone> {
+impl<'a, R: Resource> Task<'a, R> {
+    pub fn new(executable: Box<&'a dyn Executable<R>>) -> Self {
+        Self { executable }
+    }
+}
+
+pub struct Scheduler<'a, R: Resource> {
     scheduler_root: Arc<Mutex<SchedulerRoot<'a, R>>>,
     resource_schedulers: Vec<ResourceScheduler<'a, R>>,
     control_chan: Option<mpsc::Sender<()>>,
     poll_interval: u64,
 }
-
-pub struct ScheduleData {}
 
 impl<'a, R: 'a + Resource + Copy + Send> Scheduler<'a, R> {
     pub fn new(root: PathBuf) -> Result<Self, Error> {
@@ -187,7 +186,7 @@ impl<'a, R: 'a + Resource + Copy + Send> Scheduler<'a, R> {
     }
 }
 
-struct SchedulerRoot<'a, R: Resource + Clone> {
+struct SchedulerRoot<'a, R: Resource> {
     root: PathBuf,
     /// A given `Task` (identified uniquely by a `TaskIdent`) may have multiple `TaskFile`s associated,
     /// one per `Resource` for which it is currently scheduled (but only one `Resource` will eventually be assigned).
@@ -198,9 +197,9 @@ struct SchedulerRoot<'a, R: Resource + Clone> {
     ident_counter: usize,
 }
 
-unsafe impl<'a, R: Resource + Clone> Send for SchedulerRoot<'a, R> {}
+unsafe impl<'a, R: Resource> Send for SchedulerRoot<'a, R> {}
 
-impl<'a, R: Resource + Clone> SchedulerRoot<'a, R> {
+impl<'a, R: Resource> SchedulerRoot<'a, R> {
     fn new(root: PathBuf) -> Result<Self, Error> {
         create_dir_all(&root)?;
         Ok(Self {
@@ -232,13 +231,13 @@ impl<'a, R: Resource + Clone> SchedulerRoot<'a, R> {
                 .or_insert(Default::default())
                 .insert(task_file);
             self.own_tasks
-                .insert(task_ident.clone(), Mutex::new(task.clone_task()));
+                .insert(task_ident.clone(), Mutex::new(task.clone()));
         }
         Ok(())
     }
 }
 
-struct ResourceScheduler<'a, R: Resource + Clone> {
+struct ResourceScheduler<'a, R: Resource> {
     root_scheduler: Arc<Mutex<SchedulerRoot<'a, R>>>,
     dir: PathBuf,
     resource: R,
@@ -246,7 +245,7 @@ struct ResourceScheduler<'a, R: Resource + Clone> {
     previous: Option<(TaskIdent, usize)>,
 }
 
-impl<'a, R: Resource + Clone> ResourceScheduler<'a, R> {
+impl<'a, R: Resource> ResourceScheduler<'a, R> {
     fn new(root_scheduler: Arc<Mutex<SchedulerRoot<'a, R>>>, dir: PathBuf, resource: R) -> Self {
         Self {
             root_scheduler,
@@ -421,7 +420,7 @@ mod test {
     struct Dummy<R> {
         _r: PhantomData<R>,
     }
-    impl<R: Resource + Clone> Preemption<R> for Dummy<R> {
+    impl<R: Resource> Preemption<R> for Dummy<R> {
         fn should_preempt_now(&self, _task: &Task<R>) -> bool {
             false
         }
@@ -432,9 +431,43 @@ mod test {
         id: usize,
     }
 
-    impl<R: Resource + Clone> Executable<R> for Task1 {
+    impl<R: Resource> Executable<R> for Task1 {
         fn execute(&self, _p: &dyn Preemption<R>) {
             (*RESULT_STATE).lock().unwrap().push(self.id);
+        }
+    }
+
+    #[derive(Debug)]
+    struct Task2 {
+        id: usize,
+        in_chan: Mutex<mpsc::Sender<usize>>,
+        in_chan_internal: Mutex<mpsc::Receiver<usize>>,
+        out_chan: Mutex<mpsc::Receiver<usize>>,
+        out_chan_internal: Mutex<mpsc::Sender<usize>>,
+    }
+
+    impl Task2 {
+        fn new(id: usize) -> Self {
+            let (in_tx, in_rx) = mpsc::channel();
+            let (out_tx, out_rx) = mpsc::channel();
+            Self {
+                id,
+                in_chan: Mutex::new(in_tx),
+                in_chan_internal: Mutex::new(in_rx),
+                out_chan: Mutex::new(out_rx),
+                out_chan_internal: Mutex::new(out_tx),
+            }
+        }
+        fn set_input(&self, x: usize) {
+            self.in_chan.lock().unwrap().send(x);
+        }
+    }
+
+    impl<R: Resource> Executable<R> for Task2 {
+        fn execute(&self, _p: &dyn Preemption<R>) {
+            let input = self.in_chan_internal.lock().unwrap().recv().unwrap_or(999);
+            let result = input * input;
+            self.out_chan_internal.lock().unwrap().send(result);
         }
     }
 
@@ -444,7 +477,8 @@ mod test {
             Scheduler::<Rsrc>::new(tempfile::tempdir().unwrap().into_path())
                 .expect("Failed to create scheduler")
         );
-        static ref TASKS: Vec<Task1> = (0..5).map(|id| Task1 { id }).collect::<Vec<_>>();
+        static ref TASKS1: Vec<Task1> = (0..5).map(|id| Task1 { id }).collect::<Vec<_>>();
+        static ref TASKS2: Vec<Task2> = (0..5).map(|id| Task2::new(id)).collect::<Vec<_>>();
     }
 
     #[test]
@@ -464,13 +498,13 @@ mod test {
         let mut expected = Vec::new();
 
         let control_chan = Scheduler::start(scheduler).expect("Failed to start scheduler.");
-        for (i, task) in TASKS.iter().enumerate() {
+        for (i, task) in TASKS1.iter().enumerate() {
             // When tasks are added very quickly (relative to the poll interval),
             // they should be performed in order of their priority.
             // In this group, we set priority to be the 'inverse' of task id.
             // So task 0 has a high-numbered priority and should be performed last.
             // Therefore, we push the highest id onto `expected` first.
-            let priority = TASKS.len() - i - 1;
+            let priority = TASKS1.len() - i - 1;
             expected.push(priority);
             scheduler
                 .lock()
@@ -478,11 +512,11 @@ mod test {
                 .schedule(priority, &format!("{:?}", task), task, &resources);
         }
         thread::sleep(Duration::from_millis(1000));
-        for (i, task) in TASKS.iter().enumerate() {
+        for (i, task) in TASKS1.iter().enumerate() {
             // This example is like the previous, except that we sleep for twice the length of the poll interval
             // between each call to `schedule`. TODO: set the poll interval explicitly in the test.
             // Because each task is fully processed, they are performed in the order scheduled.
-            let priority = TASKS.len() - i - 1;
+            let priority = TASKS1.len() - i - 1;
             expected.push(i);
             thread::sleep(Duration::from_millis(200));
             scheduler
@@ -491,7 +525,7 @@ mod test {
                 .schedule(priority, &format!("{:?}", task), task, &resources);
         }
         thread::sleep(Duration::from_millis(1000));
-        for (i, task) in TASKS.iter().enumerate() {
+        for (i, task) in TASKS1.iter().enumerate() {
             // In this example, tasks are added quickly and with priority matching id.
             // We therefore expect them to be performed in the order scheduled.
             // This case is somewhat trivial.
@@ -502,9 +536,32 @@ mod test {
                 .schedule(i, &format!("{:?}", task), task, &resources);
         }
         thread::sleep(Duration::from_millis(1000));
+
+        for (i, task) in TASKS2.iter().enumerate() {
+            // This example does not exercise the scheduler as such,
+            // since results are harvested from the output channels
+            // in the expected order (so scheduling does not come into play).
+            // However, it does demonstrate and ensure use and usability of channels
+            // to provide input to and receive output from tasks.
+            let priority = TASKS1.len() - i - 1;
+            task.set_input(i);
+            expected.push(i * i);
+            scheduler
+                .lock()
+                .unwrap()
+                .schedule(priority, &format!("{:?}", task), task, &resources);
+        }
+
+        for (i, task) in TASKS2.iter().enumerate() {
+            let result = task.out_chan.lock().unwrap().recv().unwrap();
+            (*RESULT_STATE).lock().unwrap().push(result);
+        }
+
+        thread::sleep(Duration::from_millis(1000));
+
         scheduler.lock().unwrap().stop();
 
-        assert_eq!(TASKS.len() * 3, expected.len());
+        assert_eq!(TASKS1.len() * 4, expected.len());
 
         assert_eq!(expected, *RESULT_STATE.lock().unwrap());
     }
