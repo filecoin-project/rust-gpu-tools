@@ -208,8 +208,6 @@ struct ResourceScheduler<R: Resource + 'static> {
     root_scheduler: Arc<Mutex<SchedulerRoot<R>>>,
     dir: PathBuf,
     resource: Arc<R>,
-    /// The previous 'next', and a count of how many times we have seen it as such.
-    previous: Option<(TaskIdent, usize)>,
 }
 
 impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
@@ -218,7 +216,6 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
             root_scheduler,
             dir,
             resource,
-            previous: None,
         }
     }
 
@@ -277,7 +274,6 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
         } else {
             // If there was no `TaskIdent` found, nothing to do.
             // Forget about anything we saw before.
-            self.previous = None;
             return Ok(());
         };
         let is_own = self
@@ -303,7 +299,6 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
 
                 if let Ok(ref mut guard) = guard_result {
                     let task = &*guard;
-                    self.previous = None;
 
                     let mut to_destroy_later = None;
 
@@ -344,30 +339,12 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
                 self.root_scheduler.lock().unwrap().own_tasks.remove(&ident);
             }
         } else {
-            // Task is owned by another process.
-            if locked {
-                self.previous = None;
-            } else {
-                self.previous = match &self.previous {
-                    // The same unlocked task has been 'next up' for turns threevmx, so it has forfeited its turn.
-                    // Since we discovered this, it is our job to destroy it.
-                    // We need to see it three times, since different processes will be on different schedules.
-                    // Worst-case behavior of out-of-sync schedules gives no time for the actual winner to act.
-                    Some((previous, n)) if previous == &ident && *n >= 2 => {
-                        // If this fails, someone else may have seized the lock and done it for us.
-                        previous.try_destroy(&self.dir)?;
-                        None
-                    }
-
-                    // Increment the count, so we can destroy this if we see it on top next time we check.
-                    Some((previous, n)) if previous == &ident => Some((previous.clone(), n + 1)),
-
-                    // No match, forget.
-                    Some(_) => None,
-
-                    // Remember this ident,
-                    None => Some((ident.clone(), 1)),
-                }
+            if !locked {
+                // The next-up task is unlocked, so it can be destroyed —
+                // unless it has *just* been created and not yet locked.
+                // In that case, sleep just a moment to be safe.
+                thread::sleep(Duration::from_millis(10));
+                ident.try_destroy(&self.dir)?;
             }
         }
         Ok(())
