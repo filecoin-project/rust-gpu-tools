@@ -6,10 +6,8 @@ use ::lazy_static::lazy_static;
 
 use self::task_ident::TaskIdent;
 use fs2::FileExt;
-use log::debug;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
-use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, create_dir_all, File};
@@ -55,14 +53,14 @@ pub trait Resource {
     }
 }
 
-pub struct Scheduler<'a, R: Resource> {
-    scheduler_root: Arc<Mutex<SchedulerRoot<'a, R>>>,
-    resource_schedulers: HashMap<PathBuf, ResourceScheduler<'a, R>>,
+pub struct Scheduler<R: Resource + 'static> {
+    scheduler_root: Arc<Mutex<SchedulerRoot<R>>>,
+    resource_schedulers: HashMap<PathBuf, ResourceScheduler<R>>,
     control_chan: Option<mpsc::Sender<()>>,
     poll_interval: u64,
 }
 
-impl<'a, R: 'a + Resource + Copy + Send> Scheduler<'a, R> {
+impl<'a, R: 'a + Resource + Copy + Send + Sync> Scheduler<R> {
     pub fn new(root: PathBuf) -> Result<Self, Error> {
         Self::new_with_poll_interval(root, POLL_INTERVAL_MS)
     }
@@ -104,7 +102,7 @@ impl<'a, R: 'a + Resource + Copy + Send> Scheduler<'a, R> {
         &mut self,
         priority: usize,
         name: &str,
-        task: &'a dyn Executable<R>,
+        task: &'static (dyn Executable<R> + Sync),
         resources: &[R],
     ) -> Result<(), Error> {
         resources.iter().for_each(|r| {
@@ -116,10 +114,12 @@ impl<'a, R: 'a + Resource + Copy + Send> Scheduler<'a, R> {
             .unwrap()
             .new_ident(priority, name);
         let task = Task::new(Box::new(task));
-        self.scheduler_root
-            .lock()
-            .unwrap()
-            .schedule(task_ident, task, resources)
+        self.scheduler_root.lock().unwrap().schedule(
+            task_ident,
+            task,
+            resources,
+            &self.resource_schedulers,
+        )
     }
 
     pub fn stop(&self) -> Result<(), mpsc::SendError<()>> {
@@ -143,27 +143,25 @@ impl<'a, R: 'a + Resource + Copy + Send> Scheduler<'a, R> {
     }
 }
 
-struct SchedulerRoot<'a, R: Resource> {
+struct SchedulerRoot<R: Resource + 'static> {
     root: PathBuf,
     /// A given `Task` (identified uniquely by a `TaskIdent`) may have multiple `TaskFile`s associated,
     /// one per `Resource` for which it is currently scheduled (but only one `Resource` will eventually be assigned).
     task_files: HashMap<TaskIdent, HashSet<TaskFile>>,
     /// Each `Task` (identified uniquely by a `TaskIdent`) is protected by a `Mutex`.
-    own_tasks: HashMap<TaskIdent, Mutex<Task<'a, R>>>,
-    children: Mutex<HashMap<String, ResourceScheduler<'a, R>>>,
+    own_tasks: HashMap<TaskIdent, Mutex<Task<R>>>,
     ident_counter: usize,
 }
 
-unsafe impl<'a, R: Resource> Send for SchedulerRoot<'a, R> {}
+unsafe impl<'a, R: Resource> Send for SchedulerRoot<R> {}
 
-impl<'a, R: Resource> SchedulerRoot<'a, R> {
+impl<'a, R: Resource + Sync> SchedulerRoot<R> {
     fn new(root: PathBuf) -> Result<Self, Error> {
         create_dir_all(&root)?;
         Ok(Self {
             root,
             task_files: Default::default(),
             own_tasks: Default::default(),
-            children: Default::default(),
             ident_counter: 0,
         })
     }
@@ -175,8 +173,9 @@ impl<'a, R: Resource> SchedulerRoot<'a, R> {
     fn schedule(
         &mut self,
         task_ident: TaskIdent,
-        task: Task<'a, R>,
+        task: Task<R>,
         resources: &[R],
+        resource_schedulers: &HashMap<PathBuf, ResourceScheduler<R>>,
     ) -> Result<(), Error> {
         for resource in resources.iter() {
             let dir = self.root.join(resource.dir_id());
@@ -189,21 +188,32 @@ impl<'a, R: Resource> SchedulerRoot<'a, R> {
                 .insert(task_file);
             self.own_tasks
                 .insert(task_ident.clone(), Mutex::new(task.clone()));
+
+            // FIXME: Refactor to break handle_next up further, so we can use some of its
+            // decomposed parts here. In particular, after performing the task,
+            // we need to remove it and any siblings already added (on earlier iterations of this loop).
+            // if let Some((next, locked)) = ResourceScheduler::<R>::next_task_ident(&dir) {
+            //     if next == task_ident {
+            //         if let Some(resource_scheduler) = resource_schedulers.get(&dir) {
+            //             resource_scheduler.perform_task(&task);
+            //         }
+            //     }
+            // }
         }
         Ok(())
     }
 }
 
-struct ResourceScheduler<'a, R: Resource> {
-    root_scheduler: Arc<Mutex<SchedulerRoot<'a, R>>>,
+struct ResourceScheduler<R: Resource + 'static> {
+    root_scheduler: Arc<Mutex<SchedulerRoot<R>>>,
     dir: PathBuf,
     resource: R,
     /// The previous 'next', and a count of how many times we have seen it as such.
     previous: Option<(TaskIdent, usize)>,
 }
 
-impl<'a, R: Resource> ResourceScheduler<'a, R> {
-    fn new(root_scheduler: Arc<Mutex<SchedulerRoot<'a, R>>>, dir: PathBuf, resource: R) -> Self {
+impl<'a, R: Resource + Sync> ResourceScheduler<R> {
+    fn new(root_scheduler: Arc<Mutex<SchedulerRoot<R>>>, dir: PathBuf, resource: R) -> Self {
         Self {
             root_scheduler,
             dir,
@@ -211,14 +221,15 @@ impl<'a, R: Resource> ResourceScheduler<'a, R> {
             previous: None,
         }
     }
+
     fn lock(&self) -> Result<ResourceLock, Error> {
         ResourceLock::acquire(&self.dir, &self.resource)
     }
 
-    fn handle_next(&mut self) -> Result<(), Error> {
-        assert!(self.dir.is_dir(), "scheduler dir is not a directory.");
+    fn next_task_ident(dir: &PathBuf) -> Option<(TaskIdent, bool)> {
         let mut ident_data = Vec::new();
-        let _ = fs::read_dir(&self.dir)?
+        let _ = fs::read_dir(&dir)
+            .unwrap()
             .map(|res| {
                 res.map(|e| {
                     // FIXME: unwraps
@@ -240,7 +251,8 @@ impl<'a, R: Resource> ResourceScheduler<'a, R> {
                     };
                 })
             })
-            .collect::<Result<Vec<_>, Error>>()?;
+            .collect::<Result<Vec<_>, Error>>()
+            .unwrap();
         ident_data.sort_by(|(a_ident, a_create_date, _), (b_ident, b_create_date, _)| {
             // Sort first by (priority, creation date).
             let priority_ordering = a_ident.priority.partial_cmp(&b_ident.priority).unwrap();
@@ -249,8 +261,19 @@ impl<'a, R: Resource> ResourceScheduler<'a, R> {
                 _ => priority_ordering,
             }
         });
-        let (ident, locked) = if let Some((ident, _, locked)) = ident_data.get(0) {
-            (ident, *locked)
+        if let Some((ident, _, locked)) = ident_data.get(0) {
+            return Some((ident.clone(), *locked));
+        } else {
+            return None;
+        };
+    }
+
+    fn handle_next(&mut self) -> Result<(), Error> {
+        assert!(self.dir.is_dir(), "scheduler dir is not a directory.");
+
+        // FIXME: Clean this up.
+        let (ident, locked) = if let Some((ident, locked)) = Self::next_task_ident(&self.dir) {
+            (ident, locked)
         } else {
             // If there was no `TaskIdent` found, nothing to do.
             // Forget about anything we saw before.
@@ -262,7 +285,7 @@ impl<'a, R: Resource> ResourceScheduler<'a, R> {
             .lock()
             .unwrap()
             .own_tasks
-            .get(ident)
+            .get(&ident)
             .is_some();
 
         if is_own {
@@ -274,7 +297,7 @@ impl<'a, R: Resource> ResourceScheduler<'a, R> {
                 // Lock the task so a sibling won't remove it.
                 let mut guard_result = root_scheduler
                     .own_tasks
-                    .get(ident)
+                    .get(&ident)
                     .expect("own task missing")
                     .try_lock();
 
@@ -285,7 +308,7 @@ impl<'a, R: Resource> ResourceScheduler<'a, R> {
                     let mut to_destroy_later = None;
 
                     // We have the lock for this task, so we may destroy the sibling TaskFiles.
-                    if let Some(all_task_files) = root_scheduler.task_files.get(ident) {
+                    if let Some(all_task_files) = root_scheduler.task_files.get(&ident) {
                         // FIXME: unwrap
                         all_task_files.iter().for_each(|task_file| {
                             // Don't destroy this directory's task file until we are done performing the task
@@ -299,7 +322,7 @@ impl<'a, R: Resource> ResourceScheduler<'a, R> {
                         });
                     }
 
-                    self.perform_task(&task)?;
+                    self.perform_task(&**task)?;
                     // NOTE: We must defer removing from `self.own_tasks` because the map is borrowed in this scope above.
                     performed_task = true;
 
@@ -330,14 +353,14 @@ impl<'a, R: Resource> ResourceScheduler<'a, R> {
                     // Since we discovered this, it is our job to destroy it.
                     // We need to see it three times, since different processes will be on different schedules.
                     // Worst-case behavior of out-of-sync schedules gives no time for the actual winner to act.
-                    Some((previous, n)) if previous == ident && *n >= 2 => {
+                    Some((previous, n)) if previous == &ident && *n >= 2 => {
                         // If this fails, someone else may have seized the lock and done it for us.
                         previous.try_destroy(&self.dir)?;
                         None
                     }
 
                     // Increment the count, so we can destroy this if we see it on top next time we check.
-                    Some((previous, n)) if previous == ident => Some((previous.clone(), n + 1)),
+                    Some((previous, n)) if previous == &ident => Some((previous.clone(), n + 1)),
 
                     // No match, forget.
                     Some(_) => None,
@@ -352,10 +375,26 @@ impl<'a, R: Resource> ResourceScheduler<'a, R> {
 
     fn perform_task(&self, task: &Task<R>) -> Result<(), Error> {
         let _lock = self.lock()?;
-        // Pass `self` so `Executable` can call `should_preempt_now` on it if needed.
-        task.execute(self);
+        // TOOD: Pass `self` so `Executable` can call `should_preempt_now` on it if needed.
+
+        task.execute(
+            &self.resource,
+            &Dummy {
+                _r: PhantomData::<R>,
+            },
+        );
+
         Ok(())
         // Lock is dropped, and therefore released here, at end of scope.
+    }
+}
+
+struct Dummy<R> {
+    _r: PhantomData<R>,
+}
+impl<R: Resource> Preemption<R> for Dummy<R> {
+    fn should_preempt_now(&self, _task: &Task<R>) -> bool {
+        false
     }
 }
 
@@ -374,14 +413,14 @@ mod test {
         }
     }
 
-    struct Dummy<R> {
-        _r: PhantomData<R>,
-    }
-    impl<R: Resource> Preemption<R> for Dummy<R> {
-        fn should_preempt_now(&self, _task: &Task<R>) -> bool {
-            false
-        }
-    }
+    // struct Dummy<R> {
+    //     _r: PhantomData<R>,
+    // }
+    // impl<R: Resource> Preemption<R> for Dummy<R> {
+    //     fn should_preempt_now(&self, _task: &Task<R>) -> bool {
+    //         false
+    //     }
+    // }
 
     #[derive(Debug)]
     struct Task1 {
@@ -389,7 +428,7 @@ mod test {
     }
 
     impl<R: Resource> Executable<R> for Task1 {
-        fn execute(&self, _p: &dyn Preemption<R>) {
+        fn execute(&self, resource: &R, _p: &dyn Preemption<R>) {
             (*RESULT_STATE).lock().unwrap().push(self.id);
         }
     }
@@ -421,7 +460,7 @@ mod test {
     }
 
     impl<R: Resource> Executable<R> for Task2 {
-        fn execute(&self, _p: &dyn Preemption<R>) {
+        fn execute(&self, resource: &R, _p: &dyn Preemption<R>) {
             let input = self.in_chan_internal.lock().unwrap().recv().unwrap_or(999);
             let result = input * input;
             self.out_chan_internal.lock().unwrap().send(result);
@@ -430,7 +469,7 @@ mod test {
 
     lazy_static! {
         static ref RESULT_STATE: Mutex<Vec<usize>> = Mutex::new(Vec::new());
-        static ref SCHEDULER: Mutex<Scheduler::<'static, Rsrc>> = Mutex::new(
+        static ref SCHEDULER: Mutex<Scheduler::<Rsrc>> = Mutex::new(
             Scheduler::<Rsrc>::new(tempfile::tempdir().unwrap().into_path())
                 .expect("Failed to create scheduler")
         );
