@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::{Resource, ResourceScheduler};
 
 /// Implementers of `Executable` act as a callback which executes the job associated with a task.
@@ -5,7 +7,7 @@ pub trait Executable<R: Resource> {
     /// `execute` executes a task's job. `preempt.should_preempt_now()` should be polled as appropriate,
     /// and execution should terminate if it returns true. Tasks which are not preemptible need not
     /// ever check for preemption.
-    fn execute(&self, preempt: &dyn Preemption<R>);
+    fn execute(&self, resource: &R, preempt: &dyn Preemption<R>);
 
     /// Returns true if the job associated with this `Executable` can be preempted. `Executable`s
     /// which return `true` should periodically poll for preemption while executing.
@@ -20,7 +22,7 @@ pub trait Preemption<R: Resource> {
     fn should_preempt_now(&self, _task: &Task<R>) -> bool;
 }
 
-impl<'a, R: Resource> Preemption<R> for ResourceScheduler<'a, R> {
+impl<'a, R: Resource> Preemption<R> for ResourceScheduler<R> {
     /// The current `Task` should be preempted if the high-priority lock has been acquired
     /// by another `Task`.
     fn should_preempt_now(&self, _task: &Task<R>) -> bool {
@@ -28,13 +30,13 @@ impl<'a, R: Resource> Preemption<R> for ResourceScheduler<'a, R> {
     }
 }
 
-pub struct Task<'a, R: Resource> {
+pub struct Task<R: Resource + 'static> {
     /// These are the resources for which the `Task` has been requested to be scheduled,
     /// in order of preference. It is guaranteed that the `Task` will be scheduled on only one of these.
-    executable: Box<&'a dyn Executable<R>>,
+    pub(crate) executable: Box<&'static (dyn Executable<R> + Sync)>,
 }
 
-impl<'a, R: Resource> Clone for Task<'a, R> {
+impl<'a, R: Resource> Clone for Task<R> {
     fn clone(&self) -> Self {
         Self {
             executable: Box::new(*self.executable),
@@ -42,12 +44,14 @@ impl<'a, R: Resource> Clone for Task<'a, R> {
     }
 }
 
-impl<'a, R: Resource> Task<'a, R> {
-    pub fn new(executable: Box<&'a dyn Executable<R>>) -> Self {
-        Self { executable }
+impl<'a, R: Resource> Task<R> {
+    pub fn new(executable: Box<&'static (dyn Executable<R> + Sync)>) -> Self {
+        Self {
+            executable: executable,
+        }
     }
 
-    pub fn execute(&self, preempt: &dyn Preemption<R>) {
-        self.executable.execute(preempt)
+    pub fn execute(&self, resource: &R, preemption: &dyn Preemption<R>) {
+        self.executable.execute(resource, preemption)
     }
 }
