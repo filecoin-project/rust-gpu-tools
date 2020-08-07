@@ -177,6 +177,8 @@ impl<'a, R: Resource + Sync> SchedulerRoot<R> {
         resources: &[R],
         resource_schedulers: &HashMap<PathBuf, ResourceScheduler<R>>,
     ) -> Result<(), Error> {
+        self.own_tasks
+            .insert(task_ident.clone(), Mutex::new(task.clone()));
         for resource in resources.iter() {
             let dir = self.root.join(resource.dir_id());
             create_dir_all(&dir)?;
@@ -186,8 +188,6 @@ impl<'a, R: Resource + Sync> SchedulerRoot<R> {
                 .entry(task_ident.clone())
                 .or_insert(Default::default())
                 .insert(task_file);
-            self.own_tasks
-                .insert(task_ident.clone(), Mutex::new(task.clone()));
 
             // FIXME: Refactor to break handle_next up further, so we can use some of its
             // decomposed parts here. In particular, after performing the task,
