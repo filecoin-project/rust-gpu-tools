@@ -103,17 +103,17 @@ impl<'a, R: 'a + Resource + Copy + Send + Sync> Scheduler<R> {
         priority: usize,
         name: &str,
         task: &'static (dyn Executable<R> + Sync),
-        resources: &[R],
+        resources: &[Arc<R>],
     ) -> Result<(), Error> {
         resources.iter().for_each(|r| {
-            self.ensure_resource_scheduler(*r);
+            self.ensure_resource_scheduler(r.clone());
         });
         let task_ident = self
             .scheduler_root
             .lock()
             .unwrap()
             .new_ident(priority, name);
-        let task = Task::new(Box::new(task));
+        let task = Task::new(Arc::new(Box::new(task)));
         self.scheduler_root.lock().unwrap().schedule(
             task_ident,
             task,
@@ -129,7 +129,7 @@ impl<'a, R: 'a + Resource + Copy + Send + Sync> Scheduler<R> {
         Ok(())
     }
 
-    fn ensure_resource_scheduler(&mut self, resource: R) {
+    fn ensure_resource_scheduler(&mut self, resource: Arc<R>) {
         let dir = self
             .scheduler_root
             .lock()
@@ -174,8 +174,8 @@ impl<'a, R: Resource + Sync> SchedulerRoot<R> {
         &mut self,
         task_ident: TaskIdent,
         task: Task<R>,
-        resources: &[R],
-        resource_schedulers: &HashMap<PathBuf, ResourceScheduler<R>>,
+        resources: &[Arc<R>],
+        _resource_schedulers: &HashMap<PathBuf, ResourceScheduler<R>>,
     ) -> Result<(), Error> {
         self.own_tasks
             .insert(task_ident.clone(), Mutex::new(task.clone()));
@@ -207,13 +207,13 @@ impl<'a, R: Resource + Sync> SchedulerRoot<R> {
 struct ResourceScheduler<R: Resource + 'static> {
     root_scheduler: Arc<Mutex<SchedulerRoot<R>>>,
     dir: PathBuf,
-    resource: R,
+    resource: Arc<R>,
     /// The previous 'next', and a count of how many times we have seen it as such.
     previous: Option<(TaskIdent, usize)>,
 }
 
-impl<'a, R: Resource + Sync> ResourceScheduler<R> {
-    fn new(root_scheduler: Arc<Mutex<SchedulerRoot<R>>>, dir: PathBuf, resource: R) -> Self {
+impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
+    fn new(root_scheduler: Arc<Mutex<SchedulerRoot<R>>>, dir: PathBuf, resource: Arc<R>) -> Self {
         Self {
             root_scheduler,
             dir,
@@ -223,7 +223,7 @@ impl<'a, R: Resource + Sync> ResourceScheduler<R> {
     }
 
     fn lock(&self) -> Result<ResourceLock, Error> {
-        ResourceLock::acquire(&self.dir, &self.resource)
+        ResourceLock::acquire(&self.dir, &*self.resource)
     }
 
     fn next_task_ident(dir: &PathBuf) -> Option<(TaskIdent, bool)> {
@@ -374,27 +374,29 @@ impl<'a, R: Resource + Sync> ResourceScheduler<R> {
     }
 
     fn perform_task(&self, task: &Task<R>) -> Result<(), Error> {
-        let _lock = self.lock()?;
-        // TOOD: Pass `self` so `Executable` can call `should_preempt_now` on it if needed.
+        let (tx, rx) = mpsc::channel();
 
-        task.execute(
-            &self.resource,
-            &Dummy {
-                _r: PhantomData::<R>,
-            },
-        );
+        let preemption_checker = PreemptionChecker {
+            dir: self.dir.clone(),
+        };
 
+        tx.send((task.executable.clone(), self.resource.clone()));
+        thread::spawn(move || {
+            let (executable, resource) = rx.recv().expect("failed to receive in perform_task");
+            (***executable).execute(&resource, &preemption_checker);
+        });
         Ok(())
         // Lock is dropped, and therefore released here, at end of scope.
     }
 }
 
-struct Dummy<R> {
-    _r: PhantomData<R>,
+struct PreemptionChecker {
+    dir: PathBuf,
 }
-impl<R: Resource> Preemption<R> for Dummy<R> {
+
+impl<R: Resource> Preemption<R> for PreemptionChecker {
     fn should_preempt_now(&self, _task: &Task<R>) -> bool {
-        false
+        todo!();
     }
 }
 
@@ -413,14 +415,14 @@ mod test {
         }
     }
 
-    // struct Dummy<R> {
-    //     _r: PhantomData<R>,
-    // }
-    // impl<R: Resource> Preemption<R> for Dummy<R> {
-    //     fn should_preempt_now(&self, _task: &Task<R>) -> bool {
-    //         false
-    //     }
-    // }
+    struct Dummy<R> {
+        _r: PhantomData<R>,
+    }
+    impl<R: Resource> Preemption<R> for Dummy<R> {
+        fn should_preempt_now(&self, _task: &Task<R>) -> bool {
+            false
+        }
+    }
 
     #[derive(Debug)]
     struct Task1 {
@@ -428,7 +430,7 @@ mod test {
     }
 
     impl<R: Resource> Executable<R> for Task1 {
-        fn execute(&self, resource: &R, _p: &dyn Preemption<R>) {
+        fn execute(&self, _resource: &R, _p: &dyn Preemption<R>) {
             (*RESULT_STATE).lock().unwrap().push(self.id);
         }
     }
@@ -460,7 +462,7 @@ mod test {
     }
 
     impl<R: Resource> Executable<R> for Task2 {
-        fn execute(&self, resource: &R, _p: &dyn Preemption<R>) {
+        fn execute(&self, _resource: &R, _p: &dyn Preemption<R>) {
             let input = self.in_chan_internal.lock().unwrap().recv().unwrap_or(999);
             let result = input * input;
             self.out_chan_internal.lock().unwrap().send(result);
@@ -489,7 +491,7 @@ mod test {
             .root
             .clone();
 
-        let resources = (0..3).map(|id| Rsrc { id }).collect::<Vec<_>>();
+        let resources = (0..3).map(|id| Arc::new(Rsrc { id })).collect::<Vec<_>>();
 
         let mut expected = Vec::new();
 
