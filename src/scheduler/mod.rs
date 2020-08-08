@@ -1,7 +1,5 @@
 extern crate rand;
 
-// TODO: respect resource order preference for scheduled tasks.
-
 use ::lazy_static::lazy_static;
 
 use self::task_ident::TaskIdent;
@@ -155,7 +153,7 @@ struct SchedulerRoot<R: Resource + 'static> {
 
 unsafe impl<'a, R: Resource> Send for SchedulerRoot<R> {}
 
-impl<'a, R: Resource + Sync> SchedulerRoot<R> {
+impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
     fn new(root: PathBuf) -> Result<Self, Error> {
         create_dir_all(&root)?;
         Ok(Self {
@@ -175,13 +173,18 @@ impl<'a, R: Resource + Sync> SchedulerRoot<R> {
         task_ident: TaskIdent,
         task: Task<R>,
         resources: &[Arc<R>],
-        _resource_schedulers: &HashMap<PathBuf, ResourceScheduler<R>>,
+        resource_schedulers: &HashMap<PathBuf, ResourceScheduler<R>>,
     ) -> Result<(), Error> {
         self.own_tasks
             .insert(task_ident.clone(), Mutex::new(task.clone()));
+
+        // Create all resource dirs, if necessary (even if task is performed before enqueuing on all of them).
         for resource in resources.iter() {
             let dir = self.root.join(resource.dir_id());
             create_dir_all(&dir)?;
+        }
+        for resource in resources.iter() {
+            let dir = self.root.join(resource.dir_id());
             let task_file = task_ident.enqueue_in_dir(&dir)?;
 
             self.task_files
@@ -189,16 +192,15 @@ impl<'a, R: Resource + Sync> SchedulerRoot<R> {
                 .or_insert(Default::default())
                 .insert(task_file);
 
-            // FIXME: Refactor to break handle_next up further, so we can use some of its
-            // decomposed parts here. In particular, after performing the task,
-            // we need to remove it and any siblings already added (on earlier iterations of this loop).
-            // if let Some((next, locked)) = ResourceScheduler::<R>::next_task_ident(&dir) {
-            //     if next == task_ident {
-            //         if let Some(resource_scheduler) = resource_schedulers.get(&dir) {
-            //             resource_scheduler.perform_task(&task);
-            //         }
-            //     }
-            // }
+            if let Some((next, locked)) = ResourceScheduler::<R>::next_task_ident(&dir) {
+                if next == task_ident {
+                    if let Some(resource_scheduler) = resource_schedulers.get(&dir) {
+                        resource_scheduler.handle_own(&task_ident, self, true);
+                        // Once task has been performed, we're done.
+                        return Ok(());
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -268,14 +270,11 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
     fn handle_next(&mut self) -> Result<(), Error> {
         assert!(self.dir.is_dir(), "scheduler dir is not a directory.");
 
-        // FIXME: Clean this up.
-        let (ident, locked) = if let Some((ident, locked)) = Self::next_task_ident(&self.dir) {
-            (ident, locked)
-        } else {
-            // If there was no `TaskIdent` found, nothing to do.
-            // Forget about anything we saw before.
-            return Ok(());
+        let (ident, locked) = match Self::next_task_ident(&self.dir) {
+            Some(res) => res,
+            None => return Ok(()),
         };
+
         let is_own = self
             .root_scheduler
             .lock()
@@ -286,58 +285,7 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
 
         if is_own {
             // Task is owned by this process.
-
-            let mut performed_task = false;
-            {
-                let root_scheduler = self.root_scheduler.lock().unwrap();
-                // Lock the task so a sibling won't remove it.
-                let mut guard_result = root_scheduler
-                    .own_tasks
-                    .get(&ident)
-                    .expect("own task missing")
-                    .try_lock();
-
-                if let Ok(ref mut guard) = guard_result {
-                    let task = &*guard;
-
-                    let mut to_destroy_later = None;
-
-                    // We have the lock for this task, so we may destroy the sibling TaskFiles.
-                    if let Some(all_task_files) = root_scheduler.task_files.get(&ident) {
-                        // FIXME: unwrap
-                        all_task_files.iter().for_each(|task_file| {
-                            // Don't destroy this directory's task file until we are done performing the task
-                            if !task_file.path.starts_with(self.dir.clone()) {
-                                // We already hold the lock for all of our task files, so this is okay.
-                                task_file.destroy().unwrap();
-                            // TODO: check that destroy fails gracefully if already gone.
-                            } else {
-                                to_destroy_later = Some(task_file);
-                            }
-                        });
-                    }
-
-                    self.perform_task(&**task)?;
-                    // NOTE: We must defer removing from `self.own_tasks` because the map is borrowed in this scope above.
-                    performed_task = true;
-
-                    // Finally, destroy this `TaskFile`, too — assuming it is necessary.
-                    if let Some(task_file) = to_destroy_later {
-                        // We already hold the lock for this task file, so this is okay.
-                        task_file.destroy().unwrap()
-                    };
-                } else {
-                    // Task `Mutex` was already locked, which means this process has already assigned it to a different resource.
-                    // Do nothing and allow it to be cleaned up (removed from this queue) as part of that assignment.
-                }
-
-                // lock is dropped here
-            }
-
-            if performed_task {
-                // Now we can remove (see NOTE above).
-                self.root_scheduler.lock().unwrap().own_tasks.remove(&ident);
-            }
+            self.handle_own(&ident, &mut self.root_scheduler.lock().unwrap(), false);
         } else {
             if !locked {
                 // The next-up task is unlocked, so it can be destroyed —
@@ -347,6 +295,66 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
                 ident.try_destroy(&self.dir)?;
             }
         }
+        Ok(())
+    }
+
+    fn handle_own(
+        &self,
+        ident: &TaskIdent,
+        root_scheduler: &mut SchedulerRoot<R>,
+        already_performed: bool,
+    ) -> Result<(), Error> {
+        let mut performed_task = already_performed;
+        {
+            // Lock the task so a sibling won't remove it.
+            let mut guard_result = root_scheduler
+                .own_tasks
+                .get(&ident)
+                .expect("own task missing")
+                .try_lock();
+
+            if let Ok(guard) = guard_result {
+                let task = guard;
+
+                let mut to_destroy_later = None;
+
+                // We have the lock for this task, so we may destroy the sibling TaskFiles.
+                if let Some(all_task_files) = root_scheduler.task_files.get(&ident) {
+                    // FIXME: unwrap
+                    all_task_files.iter().for_each(|task_file| {
+                        // Don't destroy this directory's task file until we are done performing the task
+                        if !task_file.path.starts_with(self.dir.clone()) {
+                            // We already hold the lock for all of our task files, so this is okay.
+                            task_file.destroy().unwrap();
+                        // TODO: check that destroy fails gracefully if already gone.
+                        } else {
+                            to_destroy_later = Some(task_file);
+                        }
+                    });
+                }
+
+                self.perform_task(&*task)?;
+                // NOTE: We must defer removing from `self.own_tasks` because the map is borrowed in this scope above.
+                performed_task = true;
+
+                // Finally, destroy this `TaskFile`, too — assuming it is necessary.
+                if let Some(task_file) = to_destroy_later {
+                    // We already hold the lock for this task file, so this is okay.
+                    task_file.destroy().unwrap()
+                };
+            } else {
+                // Task `Mutex` was already locked, which means this process has already assigned it to a different resource.
+                // Do nothing and allow it to be cleaned up (removed from this queue) as part of that assignment.
+            }
+
+            // lock is dropped here
+        }
+
+        if performed_task {
+            // Now we can remove (see NOTE above).
+            root_scheduler.own_tasks.remove(&ident);
+        }
+
         Ok(())
     }
 
@@ -457,6 +465,8 @@ mod test {
     }
 
     #[test]
+    // TODO: Fix the tests. Now that we immediately schedule when possible (to respect resource preference),
+    // simultaneous deferred scheduling used by these initial tests no longer behaves as it did then.
     fn test_scheduler() {
         let scheduler = &*SCHEDULER;
         let root_dir = scheduler
