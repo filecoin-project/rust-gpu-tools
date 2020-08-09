@@ -29,8 +29,16 @@ mod task;
 mod task_file;
 mod task_ident;
 
-/// How often, in milliseconds, should we poll by default?
-const POLL_INTERVAL_MS: u64 = 100;
+/// How long should we wait between polling by default?
+const POLL_INTERVAL_MS: Duration = Duration::from_millis(100);
+
+/// Sometimes we want to yield and let something else happen first,
+/// if possible. How long we should do that?
+const BRIEF_SLEEP: Duration = Duration::from_millis(10);
+
+fn sleep_briefly() {
+    thread::sleep(BRIEF_SLEEP);
+}
 
 /// Lower values have 'higher' priority.
 type Priority = usize;
@@ -55,7 +63,7 @@ pub struct Scheduler<R: Resource + 'static> {
     scheduler_root: Arc<Mutex<SchedulerRoot<R>>>,
     resource_schedulers: HashMap<PathBuf, ResourceScheduler<R>>,
     control_chan: Option<mpsc::Sender<()>>,
-    poll_interval: u64,
+    poll_interval: Duration,
 }
 
 impl<'a, R: 'a + Resource + Copy + Send + Sync> Scheduler<R> {
@@ -63,7 +71,7 @@ impl<'a, R: 'a + Resource + Copy + Send + Sync> Scheduler<R> {
         Self::new_with_poll_interval(root, POLL_INTERVAL_MS)
     }
 
-    pub fn new_with_poll_interval(root: PathBuf, poll_interval: u64) -> Result<Self, Error> {
+    pub fn new_with_poll_interval(root: PathBuf, poll_interval: Duration) -> Result<Self, Error> {
         let scheduler = SchedulerRoot::new(root)?;
         Ok(Self {
             scheduler_root: Arc::new(Mutex::new(scheduler)),
@@ -89,7 +97,7 @@ impl<'a, R: 'a + Resource + Copy + Send + Sync> Scheduler<R> {
 
                     s.handle_next().expect("failed in handle_next"); // FIXME
                 }
-                thread::sleep(Duration::from_millis(poll_interval));
+                thread::sleep(poll_interval);
             }
         });
         scheduler.lock().unwrap().control_chan = Some(control_tx);
@@ -117,6 +125,7 @@ impl<'a, R: 'a + Resource + Copy + Send + Sync> Scheduler<R> {
             task,
             resources,
             &self.resource_schedulers,
+            self.poll_interval,
         )
     }
 
@@ -174,6 +183,7 @@ impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
         task: Task<R>,
         resources: &[Arc<R>],
         resource_schedulers: &HashMap<PathBuf, ResourceScheduler<R>>,
+        poll_interval: Duration,
     ) -> Result<(), Error> {
         self.own_tasks
             .insert(task_ident.clone(), Mutex::new(task.clone()));
@@ -192,15 +202,10 @@ impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
                 .or_insert(Default::default())
                 .insert(task_file);
 
-            if let Some((next, locked)) = ResourceScheduler::<R>::next_task_ident(&dir) {
-                if next == task_ident {
-                    if let Some(resource_scheduler) = resource_schedulers.get(&dir) {
-                        resource_scheduler.handle_own(&task_ident, self, true);
-                        // Once task has been performed, we're done.
-                        return Ok(());
-                    }
-                }
-            }
+            // In order to respect resource preference order, give each resource (in order)
+            // one chance to be performed if resource is free.
+            // This depends on `schedule` not being called from the polling loop's thread.
+            thread::sleep(poll_interval);
         }
         Ok(())
     }
@@ -223,6 +228,10 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
 
     fn lock(&self) -> Result<ResourceLock, Error> {
         ResourceLock::acquire(&self.dir, &*self.resource)
+    }
+
+    fn try_lock(&self) -> Result<Option<ResourceLock>, Error> {
+        ResourceLock::maybe_acquire(&self.dir, &*self.resource)
     }
 
     fn next_task_ident(dir: &PathBuf) -> Option<(TaskIdent, bool)> {
@@ -270,6 +279,11 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
     fn handle_next(&mut self) -> Result<(), Error> {
         assert!(self.dir.is_dir(), "scheduler dir is not a directory.");
 
+        // If resource is locked, there is nothing to do now.
+        if self.try_lock()?.is_none() {
+            return Ok(());
+        }
+
         let (ident, locked) = match Self::next_task_ident(&self.dir) {
             Some(res) => res,
             None => return Ok(()),
@@ -290,8 +304,8 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
             if !locked {
                 // The next-up task is unlocked, so it can be destroyed —
                 // unless it has *just* been created and not yet locked.
-                // In that case, sleep just a moment to be safe.
-                thread::sleep(Duration::from_millis(10));
+                // In that case, sleep briefly to be safe.
+                sleep_briefly();
                 ident.try_destroy(&self.dir)?;
             }
         }
@@ -359,6 +373,8 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
     }
 
     fn perform_task(&self, task: &Task<R>) -> Result<(), Error> {
+        let _lock = self.lock()?;
+
         let (tx, rx) = mpsc::channel();
 
         let preemption_checker = PreemptionChecker {
@@ -410,6 +426,19 @@ mod test {
     }
 
     #[derive(Debug)]
+    struct Task0 {
+        id: usize,
+        time: Duration,
+    }
+
+    impl<R: Resource> Executable<R> for Task0 {
+        fn execute(&self, _resource: &R, _p: &dyn Preemption<R>) {
+            (*RESULT_STATE).lock().unwrap().push(0);
+            thread::sleep(self.time);
+        }
+    }
+
+    #[derive(Debug)]
     struct Task1 {
         id: usize,
     }
@@ -454,12 +483,22 @@ mod test {
         }
     }
 
+    const TEST_POLL_INTERVAL: Duration = Duration::from_millis(5);
     lazy_static! {
         static ref RESULT_STATE: Mutex<Vec<usize>> = Mutex::new(Vec::new());
         static ref SCHEDULER: Mutex<Scheduler::<Rsrc>> = Mutex::new(
-            Scheduler::<Rsrc>::new(tempfile::tempdir().unwrap().into_path())
-                .expect("Failed to create scheduler")
+            Scheduler::<Rsrc>::new_with_poll_interval(
+                tempfile::tempdir().unwrap().into_path(),
+                TEST_POLL_INTERVAL
+            )
+            .expect("Failed to create scheduler"),
         );
+        static ref TASKS0: Vec<Task0> = (0..10)
+            .map(|id| Task0 {
+                id,
+                time: Duration::from_millis(100)
+            })
+            .collect::<Vec<_>>();
         static ref TASKS1: Vec<Task1> = (0..5).map(|id| Task1 { id }).collect::<Vec<_>>();
         static ref TASKS2: Vec<Task2> = (0..5).map(|id| Task2::new(id)).collect::<Vec<_>>();
     }
@@ -478,11 +517,26 @@ mod test {
             .root
             .clone();
 
-        let resources = (0..3).map(|id| Arc::new(Rsrc { id })).collect::<Vec<_>>();
+        let num_resources = 3;
+        let resources = (0..num_resources)
+            .map(|id| Arc::new(Rsrc { id }))
+            .collect::<Vec<_>>();
 
         let mut expected = Vec::new();
 
         let control_chan = Scheduler::start(scheduler).expect("Failed to start scheduler.");
+
+        for (i, task) in TASKS0.iter().take(num_resources).enumerate() {
+            /// Schedule a slow task to tie up all the resources
+            /// while the next batch of `Task1`s is scheduled.
+            let priority = 0;
+            expected.push(0);
+            scheduler
+                .lock()
+                .unwrap()
+                .schedule(priority, &format!("{:?}", task), task, &resources);
+        }
+
         for (i, task) in TASKS1.iter().enumerate() {
             // When tasks are added very quickly (relative to the poll interval),
             // they should be performed in order of their priority.
@@ -496,7 +550,7 @@ mod test {
                 .unwrap()
                 .schedule(priority, &format!("{:?}", task), task, &resources);
         }
-        thread::sleep(Duration::from_millis(1000));
+        thread::sleep(Duration::from_millis(100));
         for (i, task) in TASKS1.iter().enumerate() {
             // This example is like the previous, except that we sleep for twice the length of the poll interval
             // between each call to `schedule`. TODO: set the poll interval explicitly in the test.
@@ -509,7 +563,7 @@ mod test {
                 .unwrap()
                 .schedule(priority, &format!("{:?}", task), task, &resources);
         }
-        thread::sleep(Duration::from_millis(1000));
+        thread::sleep(Duration::from_millis(100));
         for (i, task) in TASKS1.iter().enumerate() {
             // In this example, tasks are added quickly and with priority matching id.
             // We therefore expect them to be performed in the order scheduled.
@@ -520,7 +574,7 @@ mod test {
                 .unwrap()
                 .schedule(i, &format!("{:?}", task), task, &resources);
         }
-        thread::sleep(Duration::from_millis(1000));
+        thread::sleep(Duration::from_millis(100));
 
         for (i, task) in TASKS2.iter().enumerate() {
             // This example does not exercise the scheduler as such,
@@ -542,11 +596,14 @@ mod test {
             (*RESULT_STATE).lock().unwrap().push(result);
         }
 
-        thread::sleep(Duration::from_millis(1000));
+        thread::sleep(Duration::from_millis(100));
 
         scheduler.lock().unwrap().stop();
 
-        assert_eq!(TASKS1.len() * 4, expected.len());
+        assert_eq!(
+            num_resources + TASKS1.len() * 4,
+            RESULT_STATE.lock().unwrap().len()
+        );
 
         assert_eq!(expected, *RESULT_STATE.lock().unwrap());
     }

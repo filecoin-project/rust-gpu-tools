@@ -8,7 +8,7 @@ use std::str::FromStr;
 use super::task_file::TaskFile;
 use super::{Priority, PROCESS_ID};
 
-#[derive(Clone, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub(crate) struct TaskIdent {
     pub(crate) priority: Priority,
     pub(crate) name: String,
