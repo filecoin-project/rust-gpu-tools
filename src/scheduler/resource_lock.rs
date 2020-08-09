@@ -28,6 +28,25 @@ impl ResourceLock {
             resource_name: resource.name(),
         })
     }
+
+    pub(crate) fn maybe_acquire(
+        dir: &PathBuf,
+        resource: &dyn Resource,
+    ) -> Result<Option<ResourceLock>, Error> {
+        debug!("Acquiring lock for {}...", resource.name());
+        let lockfile_path = dir.join(LOCK_NAME);
+        let file = File::create(lockfile_path)?;
+        if file.try_lock_exclusive().is_err() {
+            debug!("Could not acquire lock for {}.", resource.name());
+            return Ok(None);
+        }
+
+        debug!("Resource lock acquired for {}!", resource.name());
+        Ok(Some(Self {
+            file,
+            resource_name: resource.name(),
+        }))
+    }
 }
 
 impl Drop for ResourceLock {
