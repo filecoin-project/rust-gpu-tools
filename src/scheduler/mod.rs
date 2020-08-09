@@ -59,7 +59,7 @@ pub trait Resource {
     }
 }
 
-pub struct Scheduler<R: Resource + 'static> {
+pub struct Scheduler<R: Resource + Copy + Send + Sync + 'static> {
     scheduler_root: Arc<Mutex<SchedulerRoot<R>>>,
     resource_schedulers: HashMap<PathBuf, ResourceScheduler<R>>,
     control_chan: Option<mpsc::Sender<()>>,
@@ -81,13 +81,14 @@ impl<'a, R: 'a + Resource + Copy + Send + Sync> Scheduler<R> {
         })
     }
 
-    pub fn start(scheduler: &'static Mutex<Self>) -> Result<(), Error> {
+    pub fn start(scheduler: &'static Mutex<Self>) -> Result<SchedulerHandle, Error> {
         let (control_tx, control_rx) = mpsc::channel();
-        thread::spawn(move || {
-            let should_stop = || !control_rx.try_recv().is_err();
+        let handle = thread::spawn(move || {
             let poll_interval = scheduler.lock().unwrap().poll_interval;
+            let should_stop = || !control_rx.try_recv().is_err();
             loop {
                 if should_stop() {
+                    scheduler.lock().unwrap().cleanup();
                     break;
                 };
                 for (_, s) in scheduler.lock().unwrap().resource_schedulers.iter_mut() {
@@ -100,9 +101,14 @@ impl<'a, R: 'a + Resource + Copy + Send + Sync> Scheduler<R> {
                 thread::sleep(poll_interval);
             }
         });
-        scheduler.lock().unwrap().control_chan = Some(control_tx);
-        Ok(())
+        Ok(SchedulerHandle {
+            handle,
+            control_chan: control_tx,
+        })
     }
+
+    /// `cleanup` performs any (currently none) cleanup required when a scheduler terminates.
+    fn cleanup(&self) {}
 
     pub fn schedule(
         &mut self,
@@ -147,6 +153,18 @@ impl<'a, R: 'a + Resource + Copy + Send + Sync> Scheduler<R> {
             let rs = ResourceScheduler::new(self.scheduler_root.clone(), dir.clone(), resource);
             self.resource_schedulers.insert(dir, rs);
         }
+    }
+}
+
+/// Scheduler will be terminated when `SchedulerHandle` is dropped.
+pub struct SchedulerHandle {
+    control_chan: mpsc::Sender<()>,
+    handle: thread::JoinHandle<()>,
+}
+
+impl Drop for SchedulerHandle {
+    fn drop(&mut self) {
+        self.control_chan.send(());
     }
 }
 
@@ -524,7 +542,7 @@ mod test {
 
         let mut expected = Vec::new();
 
-        let control_chan = Scheduler::start(scheduler).expect("Failed to start scheduler.");
+        let scheduler_handle = Scheduler::start(scheduler).expect("Failed to start scheduler.");
 
         for (i, task) in TASKS0.iter().take(num_resources).enumerate() {
             /// Schedule a slow task to tie up all the resources
