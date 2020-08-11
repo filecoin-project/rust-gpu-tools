@@ -33,19 +33,11 @@ impl<'a, R: Resource> Preemption<R> for ResourceScheduler<R> {
 pub struct Task<R: Resource + 'static> {
     /// These are the resources for which the `Task` has been requested to be scheduled,
     /// in order of preference. It is guaranteed that the `Task` will be scheduled on only one of these.
-    pub(crate) executable: Arc<Box<&'static (dyn Executable<R> + Sync)>>,
-}
-
-impl<'a, R: Resource> Clone for Task<R> {
-    fn clone(&self) -> Self {
-        Self {
-            executable: Arc::new(Box::new(**self.executable)),
-        }
-    }
+    pub(crate) executable: Arc<Box<dyn Executable<R> + Sync + Send>>,
 }
 
 impl<'a, R: Resource> Task<R> {
-    pub fn new(executable: Arc<Box<&'static (dyn Executable<R> + Sync)>>) -> Self {
+    pub fn new(executable: Arc<Box<dyn Executable<R> + Sync + Send>>) -> Self {
         Self {
             executable: executable,
         }

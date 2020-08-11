@@ -114,7 +114,7 @@ impl<'a, R: 'a + Resource + Copy + Send + Sync> Scheduler<R> {
         &mut self,
         priority: usize,
         name: &str,
-        task: &'static (dyn Executable<R> + Sync),
+        task: Box<dyn Executable<R> + Sync + Send>,
         resources: &[Arc<R>],
     ) -> Result<(), Error> {
         resources.iter().for_each(|r| {
@@ -125,7 +125,7 @@ impl<'a, R: 'a + Resource + Copy + Send + Sync> Scheduler<R> {
             .lock()
             .unwrap()
             .new_ident(priority, name);
-        let task = Task::new(Arc::new(Box::new(task)));
+        let task = Task::new(Arc::new(task));
         self.scheduler_root.lock().unwrap().schedule(
             task_ident,
             task,
@@ -203,8 +203,7 @@ impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
         resource_schedulers: &HashMap<PathBuf, ResourceScheduler<R>>,
         poll_interval: Duration,
     ) -> Result<(), Error> {
-        self.own_tasks
-            .insert(task_ident.clone(), Mutex::new(task.clone()));
+        self.own_tasks.insert(task_ident.clone(), Mutex::new(task));
 
         // Create all resource dirs, if necessary (even if task is performed before enqueuing on all of them).
         for resource in resources.iter() {
@@ -393,16 +392,14 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
     fn perform_task(&self, task: &Task<R>) -> Result<(), Error> {
         let _lock = self.lock()?;
 
-        let (tx, rx) = mpsc::channel();
-
         let preemption_checker = PreemptionChecker {
             dir: self.dir.clone(),
         };
 
-        tx.send((task.executable.clone(), self.resource.clone()));
+        let resource = self.resource.clone();
+        let executable = task.executable.clone();
         thread::spawn(move || {
-            let (executable, resource) = rx.recv().expect("failed to receive in perform_task");
-            (***executable).execute(&resource, &preemption_checker);
+            executable.execute(&resource, &preemption_checker);
         });
         Ok(())
         // Lock is dropped, and therefore released here, at end of scope.
@@ -511,14 +508,6 @@ mod test {
             )
             .expect("Failed to create scheduler"),
         );
-        static ref TASKS0: Vec<Task0> = (0..10)
-            .map(|id| Task0 {
-                id,
-                time: Duration::from_millis(100)
-            })
-            .collect::<Vec<_>>();
-        static ref TASKS1: Vec<Task1> = (0..5).map(|id| Task1 { id }).collect::<Vec<_>>();
-        static ref TASKS2: Vec<Task2> = (0..5).map(|id| Task2::new(id)).collect::<Vec<_>>();
     }
 
     #[test]
@@ -544,72 +533,96 @@ mod test {
 
         let scheduler_handle = Scheduler::start(scheduler).expect("Failed to start scheduler.");
 
-        for (i, task) in TASKS0.iter().take(num_resources).enumerate() {
+        let tasks0 = (0..10)
+            .map(|id| Task0 {
+                id,
+                time: Duration::from_millis(100),
+            })
+            .collect::<Vec<_>>();
+        for (i, task) in tasks0.into_iter().take(num_resources).enumerate() {
             /// Schedule a slow task to tie up all the resources
             /// while the next batch of `Task1`s is scheduled.
             let priority = 0;
             expected.push(0);
-            scheduler
-                .lock()
-                .unwrap()
-                .schedule(priority, &format!("{:?}", task), task, &resources);
+            scheduler.lock().unwrap().schedule(
+                priority,
+                &format!("{:?}", task),
+                Box::new(task),
+                &resources,
+            );
         }
 
-        for (i, task) in TASKS1.iter().enumerate() {
+        let tasks1 = (0..5).map(|id| Task1 { id }).collect::<Vec<_>>();
+        let tasks1_len = 5;
+        for (i, task) in tasks1.into_iter().enumerate() {
             // When tasks are added very quickly (relative to the poll interval),
             // they should be performed in order of their priority.
             // In this group, we set priority to be the 'inverse' of task id.
             // So task 0 has a high-numbered priority and should be performed last.
             // Therefore, we push the highest id onto `expected` first.
-            let priority = TASKS1.len() - i - 1;
+            let priority = tasks1_len - i - 1;
             expected.push(priority);
-            scheduler
-                .lock()
-                .unwrap()
-                .schedule(priority, &format!("{:?}", task), task, &resources);
+            scheduler.lock().unwrap().schedule(
+                priority,
+                &format!("{:?}", task),
+                Box::new(task),
+                &resources,
+            );
         }
         thread::sleep(Duration::from_millis(100));
-        for (i, task) in TASKS1.iter().enumerate() {
+
+        let tasks1 = (0..5).map(|id| Task1 { id }).collect::<Vec<_>>();
+        for (i, task) in tasks1.into_iter().enumerate() {
             // This example is like the previous, except that we sleep for twice the length of the poll interval
             // between each call to `schedule`. TODO: set the poll interval explicitly in the test.
             // Because each task is fully processed, they are performed in the order scheduled.
-            let priority = TASKS1.len() - i - 1;
+            let priority = tasks1_len - i - 1;
             expected.push(i);
             thread::sleep(Duration::from_millis(200));
-            scheduler
-                .lock()
-                .unwrap()
-                .schedule(priority, &format!("{:?}", task), task, &resources);
+            scheduler.lock().unwrap().schedule(
+                priority,
+                &format!("{:?}", task),
+                Box::new(task),
+                &resources,
+            );
         }
         thread::sleep(Duration::from_millis(100));
-        for (i, task) in TASKS1.iter().enumerate() {
+
+        let tasks1 = (0..5).map(|id| Task1 { id }).collect::<Vec<_>>();
+        for (i, task) in tasks1.into_iter().enumerate() {
             // In this example, tasks are added quickly and with priority matching id.
             // We therefore expect them to be performed in the order scheduled.
             // This case is somewhat trivial.
             expected.push(i);
-            scheduler
-                .lock()
-                .unwrap()
-                .schedule(i, &format!("{:?}", task), task, &resources);
+            scheduler.lock().unwrap().schedule(
+                i,
+                &format!("{:?}", task),
+                Box::new(task),
+                &resources,
+            );
         }
         thread::sleep(Duration::from_millis(100));
 
-        for (i, task) in TASKS2.iter().enumerate() {
+        let tasks2 = (0..5).map(|id| Task2::new(id)).collect::<Vec<_>>();
+        for (i, task) in tasks2.into_iter().enumerate() {
             // This example does not exercise the scheduler as such,
             // since results are harvested from the output channels
             // in the expected order (so scheduling does not come into play).
             // However, it does demonstrate and ensure use and usability of channels
             // to provide input to and receive output from tasks.
-            let priority = TASKS1.len() - i - 1;
+            let priority = tasks1_len - i - 1; // WARN: Or tasks2_len?
             task.set_input(i);
             expected.push(i * i);
-            scheduler
-                .lock()
-                .unwrap()
-                .schedule(priority, &format!("{:?}", task), task, &resources);
+            scheduler.lock().unwrap().schedule(
+                priority,
+                &format!("{:?}", task),
+                Box::new(task),
+                &resources,
+            );
         }
 
-        for (i, task) in TASKS2.iter().enumerate() {
+        let tasks2 = (0..5).map(|id| Task2::new(id)).collect::<Vec<_>>();
+        for (i, task) in tasks2.into_iter().enumerate() {
             let result = task.out_chan.lock().unwrap().recv().unwrap();
             (*RESULT_STATE).lock().unwrap().push(result);
         }
@@ -618,8 +631,9 @@ mod test {
 
         scheduler.lock().unwrap().stop();
 
+        let tasks1_len = 5;
         assert_eq!(
-            num_resources + TASKS1.len() * 4,
+            num_resources + tasks1_len * 4, //num_resources + tasks1.len() * 4,
             RESULT_STATE.lock().unwrap().len()
         );
 
