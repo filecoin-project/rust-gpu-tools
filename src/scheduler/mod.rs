@@ -467,32 +467,27 @@ mod test {
     #[derive(Debug)]
     struct Task2 {
         id: usize,
-        in_chan: Mutex<mpsc::Sender<usize>>,
-        in_chan_internal: Mutex<mpsc::Receiver<usize>>,
-        out_chan: Mutex<mpsc::Receiver<usize>>,
+        input: usize,
         out_chan_internal: Mutex<mpsc::Sender<usize>>,
     }
 
     impl Task2 {
-        fn new(id: usize) -> Self {
-            let (in_tx, in_rx) = mpsc::channel();
+        fn create(id: usize, input: usize) -> (Self, mpsc::Receiver<usize>) {
             let (out_tx, out_rx) = mpsc::channel();
-            Self {
-                id,
-                in_chan: Mutex::new(in_tx),
-                in_chan_internal: Mutex::new(in_rx),
-                out_chan: Mutex::new(out_rx),
-                out_chan_internal: Mutex::new(out_tx),
-            }
-        }
-        fn set_input(&self, x: usize) {
-            self.in_chan.lock().unwrap().send(x);
+            (
+                Self {
+                    id,
+                    input,
+                    out_chan_internal: Mutex::new(out_tx),
+                },
+                out_rx,
+            )
         }
     }
 
     impl<R: Resource> Executable<R> for Task2 {
         fn execute(&self, _resource: &R, _p: &dyn Preemption<R>) {
-            let input = self.in_chan_internal.lock().unwrap().recv().unwrap_or(999);
+            let input = self.input;
             let result = input * input;
             self.out_chan_internal.lock().unwrap().send(result);
         }
@@ -511,8 +506,6 @@ mod test {
     }
 
     #[test]
-    // TODO: Fix the tests. Now that we immediately schedule when possible (to respect resource preference),
-    // simultaneous deferred scheduling used by these initial tests no longer behaves as it did then.
     fn test_scheduler() {
         let scheduler = &*SCHEDULER;
         let root_dir = scheduler
@@ -603,15 +596,17 @@ mod test {
         }
         thread::sleep(Duration::from_millis(100));
 
-        let tasks2 = (0..5).map(|id| Task2::new(id)).collect::<Vec<_>>();
-        for (i, task) in tasks2.into_iter().enumerate() {
+        let tasks2_len = 5;
+        let mut out_rxs = Vec::with_capacity(tasks2_len);
+        for i in 0..tasks2_len {
             // This example does not exercise the scheduler as such,
             // since results are harvested from the output channels
             // in the expected order (so scheduling does not come into play).
             // However, it does demonstrate and ensure use and usability of channels
             // to provide input to and receive output from tasks.
-            let priority = tasks1_len - i - 1; // WARN: Or tasks2_len?
-            task.set_input(i);
+            let priority = tasks2_len - i - 1;
+            let (task, out) = Task2::create(i, i);
+            out_rxs.push(out);
             expected.push(i * i);
             scheduler.lock().unwrap().schedule(
                 priority,
@@ -621,9 +616,8 @@ mod test {
             );
         }
 
-        let tasks2 = (0..5).map(|id| Task2::new(id)).collect::<Vec<_>>();
-        for (i, task) in tasks2.into_iter().enumerate() {
-            let result = task.out_chan.lock().unwrap().recv().unwrap();
+        for rx in out_rxs.iter() {
+            let result = rx.recv().unwrap();
             (*RESULT_STATE).lock().unwrap().push(result);
         }
 
@@ -633,7 +627,7 @@ mod test {
 
         let tasks1_len = 5;
         assert_eq!(
-            num_resources + tasks1_len * 4, //num_resources + tasks1.len() * 4,
+            num_resources + tasks1_len * 4,
             RESULT_STATE.lock().unwrap().len()
         );
 
