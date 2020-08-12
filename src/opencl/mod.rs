@@ -4,6 +4,7 @@ mod utils;
 pub use error::*;
 use sha2::{Digest, Sha256};
 use std::fmt::Write;
+use std::hash::{Hash, Hasher};
 
 pub type BusId = u32;
 
@@ -75,6 +76,20 @@ pub struct Device {
     device: ocl::Device,
 }
 
+impl Hash for Device {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.bus_id.hash(state);
+    }
+}
+
+impl PartialEq for Device {
+    fn eq(&self, other: &Self) -> bool {
+        self.bus_id == other.bus_id
+    }
+}
+
+impl Eq for Device {}
+
 impl Device {
     pub fn brand(&self) -> Brand {
         self.brand
@@ -87,6 +102,9 @@ impl Device {
     }
     pub fn is_little_endian(&self) -> GPUResult<bool> {
         Ok(utils::is_little_endian(self.device)?)
+    }
+    pub fn bus_id(&self) -> BusId {
+        self.bus_id
     }
 
     pub fn all() -> GPUResult<Vec<Device>> {
