@@ -24,6 +24,7 @@ use self::{
     task_file::TaskFile,
 };
 
+mod pool;
 mod resource_lock;
 mod task;
 mod task_file;
