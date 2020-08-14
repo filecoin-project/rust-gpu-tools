@@ -17,7 +17,7 @@ pub(crate) struct ResourceLock {
 }
 
 impl ResourceLock {
-    pub(crate) fn acquire(dir: &PathBuf, resource: &dyn Resource) -> Result<ResourceLock, Error> {
+    pub(crate) fn acquire<R: Resource>(dir: &PathBuf, resource: &R) -> Result<ResourceLock, Error> {
         debug!("Acquiring lock for {}...", resource.name());
         let lockfile_path = dir.join(LOCK_NAME);
         let file = File::create(lockfile_path)?;
@@ -29,9 +29,9 @@ impl ResourceLock {
         })
     }
 
-    pub(crate) fn maybe_acquire(
+    pub(crate) fn maybe_acquire<R: Resource>(
         dir: &PathBuf,
-        resource: &dyn Resource,
+        resource: &R,
     ) -> Result<Option<ResourceLock>, Error> {
         debug!("Acquiring lock for {}...", resource.name());
         let lockfile_path = dir.join(LOCK_NAME);
