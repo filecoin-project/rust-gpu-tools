@@ -638,6 +638,13 @@ mod test {
     }
 
     lazy_static! {
+        static ref SCHEDULER2: Mutex<Scheduler::<Rsrc>> = Mutex::new(
+            Scheduler::<Rsrc>::new_with_poll_interval(
+                tempfile::tempdir().unwrap().into_path(),
+                TEST_POLL_INTERVAL
+            )
+            .expect("Failed to create scheduler"),
+        );
         static ref GUARD_FAILURE: Mutex<bool> = Mutex::new(false);
         static ref RESOURCES: Vec<Arc<Rsrc>> =
             { (0..3).map(|id| Arc::new(Rsrc { id })).collect::<Vec<_>>() };
@@ -673,7 +680,7 @@ mod test {
 
     #[test]
     fn test_guards() {
-        let scheduler = &*SCHEDULER;
+        let scheduler = &*SCHEDULER2;
         let scheduler_handle = Scheduler::start(scheduler).expect("Failed to start scheduler.");
 
         let tasks: Vec<MyTask> = (0..10)
