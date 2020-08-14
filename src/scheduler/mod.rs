@@ -60,14 +60,14 @@ pub trait Resource {
     }
 }
 
-pub struct Scheduler<R: Resource + Copy + Send + Sync + 'static> {
+pub struct Scheduler<R: Resource + Send + Sync + 'static> {
     scheduler_root: Arc<Mutex<SchedulerRoot<R>>>,
     resource_schedulers: HashMap<PathBuf, ResourceScheduler<R>>,
     control_chan: Option<mpsc::Sender<()>>,
     poll_interval: Duration,
 }
 
-impl<'a, R: 'a + Resource + Copy + Send + Sync> Scheduler<R> {
+impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
     pub fn new(root: PathBuf) -> Result<Self, Error> {
         Self::new_with_poll_interval(root, POLL_INTERVAL_MS)
     }
@@ -423,8 +423,7 @@ impl<R: Resource> Preemption<R> for PreemptionChecker {
 mod test {
     use super::*;
 
-    /// `Scheduler` requires that resources be `Copy`.
-    #[derive(Copy, Clone, Debug)]
+    #[derive(Clone, Debug)]
     struct Rsrc {
         id: usize,
     }
