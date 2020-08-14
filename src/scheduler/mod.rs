@@ -50,7 +50,7 @@ lazy_static! {
         .collect();
 }
 
-pub trait Resource {
+pub trait Resource: Clone {
     /// `dir_id` uniquely identifies the directory associated with the resource.
     fn dir_id(&self) -> String;
     /// `name` is the descriptive name of the resource and defaults to wrapping `dir_id`.
@@ -115,7 +115,7 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
         priority: usize,
         name: &str,
         task: Box<dyn Executable<R> + Sync + Send>,
-        resources: &[Arc<R>],
+        resources: &Vec<R>,
     ) -> Result<(), Error> {
         resources.iter().for_each(|r| {
             self.ensure_resource_scheduler(r.clone());
@@ -129,7 +129,7 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
         self.scheduler_root.lock().unwrap().schedule(
             task_ident,
             task,
-            resources,
+            resources.clone(),
             &self.resource_schedulers,
             self.poll_interval,
         )
@@ -142,7 +142,7 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
         Ok(())
     }
 
-    fn ensure_resource_scheduler(&mut self, resource: Arc<R>) {
+    fn ensure_resource_scheduler(&mut self, resource: R) {
         let dir = self
             .scheduler_root
             .lock()
@@ -199,7 +199,7 @@ impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
         &mut self,
         task_ident: TaskIdent,
         task: Task<R>,
-        resources: &[Arc<R>],
+        resources: Vec<R>,
         resource_schedulers: &HashMap<PathBuf, ResourceScheduler<R>>,
         poll_interval: Duration,
     ) -> Result<(), Error> {
@@ -231,11 +231,11 @@ impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
 struct ResourceScheduler<R: Resource + 'static> {
     root_scheduler: Arc<Mutex<SchedulerRoot<R>>>,
     dir: PathBuf,
-    resource: Arc<R>,
+    resource: R,
 }
 
 impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
-    fn new(root_scheduler: Arc<Mutex<SchedulerRoot<R>>>, dir: PathBuf, resource: Arc<R>) -> Self {
+    fn new(root_scheduler: Arc<Mutex<SchedulerRoot<R>>>, dir: PathBuf, resource: R) -> Self {
         Self {
             root_scheduler,
             dir,
@@ -244,11 +244,11 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
     }
 
     fn lock(&self) -> Result<ResourceLock, Error> {
-        ResourceLock::acquire(&self.dir, &*self.resource)
+        ResourceLock::acquire(&self.dir, &self.resource)
     }
 
     fn try_lock(&self) -> Result<Option<ResourceLock>, Error> {
-        ResourceLock::maybe_acquire(&self.dir, &*self.resource)
+        ResourceLock::maybe_acquire(&self.dir, &self.resource)
     }
 
     fn next_task_ident(dir: &PathBuf) -> Option<(TaskIdent, bool)> {
@@ -520,9 +520,7 @@ mod test {
             .clone();
 
         let num_resources = 3;
-        let resources = (0..num_resources)
-            .map(|id| Arc::new(Rsrc { id }))
-            .collect::<Vec<_>>();
+        let resources = (0..num_resources).map(|id| Rsrc { id }).collect::<Vec<_>>();
 
         let mut expected = Vec::new();
 
@@ -645,8 +643,7 @@ mod test {
             .expect("Failed to create scheduler"),
         );
         static ref GUARD_FAILURE: Mutex<bool> = Mutex::new(false);
-        static ref RESOURCES: Vec<Arc<Rsrc>> =
-            { (0..3).map(|id| Arc::new(Rsrc { id })).collect::<Vec<_>>() };
+        static ref RESOURCES: Vec<Rsrc> = { (0..3).map(|id| Rsrc { id }).collect::<Vec<_>>() };
         static ref RESOURCE_LOCKS: HashMap<String, Mutex<()>> = {
             let mut map = HashMap::new();
             for rsrc in RESOURCES.iter() {
