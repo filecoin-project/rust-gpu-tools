@@ -390,7 +390,7 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
     }
 
     fn perform_task(&self, task: &Task<R>) -> Result<(), Error> {
-        let _lock = self.lock()?;
+        let lock = self.lock()?;
 
         let preemption_checker = PreemptionChecker {
             dir: self.dir.clone(),
@@ -399,10 +399,13 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
         let resource = self.resource.clone();
         let executable = task.executable.clone();
         thread::spawn(move || {
+            let captured_lock = lock;
             executable.execute(&resource, &preemption_checker);
+
+            // Lock is dropped, and therefore released here, at end of scope after task has been performed.
         });
+
         Ok(())
-        // Lock is dropped, and therefore released here, at end of scope.
     }
 }
 
