@@ -1,7 +1,9 @@
 use super::*;
+use rayon::prelude::*;
+use std::sync::mpsc;
 
 #[derive(Copy, Clone, Debug)]
-struct Device {
+pub struct Device {
     bus_id: usize,
 }
 
@@ -12,16 +14,20 @@ impl Resource for Device {
 }
 
 #[derive(Debug)]
-struct MyTask {
+struct MyTask<F, T>
+where
+    F: Fn(&Device) -> T,
+{
     id: usize,
-    time: Duration,
+    func: F,
 }
 
-impl<R: Resource> Executable<R> for MyTask {
-    fn execute(&self, resource: &R, _p: &dyn Preemption<R>) {
-        println!("Start task {} on {}!", self.id, resource.name());
-        thread::sleep(self.time);
-        println!("Done task {}!", self.id);
+impl<F, T> Executable<Device> for MyTask<F, T>
+where
+    F: Fn(&Device) -> T,
+{
+    fn execute(&self, resource: &Device, _p: &dyn Preemption<Device>) {
+        (self.func)(resource);
     }
 }
 
@@ -36,29 +42,42 @@ lazy_static! {
     );
 }
 
+pub fn schedule<F: 'static, T: 'static>(devices: &Vec<Device>, f: F) -> T
+where
+    F: Fn(&Device) -> T + Sync + Send,
+    T: Sync + Send,
+{
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let t = MyTask::<_, ()> {
+        id: 0,
+        func: move |dev| {
+            tx.lock().unwrap().send(f(dev)).unwrap();
+        },
+    };
+    let scheduler = &*SCHEDULER;
+    scheduler
+        .lock()
+        .unwrap()
+        .schedule(0, &t.id.to_string(), Box::new(t), devices)
+        .unwrap();
+    rx.recv().unwrap()
+}
+
 #[test]
 fn test_pool() {
-    let scheduler = &*SCHEDULER;
-    let scheduler_handle = Scheduler::start(scheduler).expect("Failed to start scheduler.");
+    let scheduler_handle = Scheduler::start(&*SCHEDULER).expect("Failed to start scheduler.");
 
-    let num_resources = 3;
-    let resources = (0..num_resources)
-        .map(|bus_id| Arc::new(Device { bus_id }))
-        .collect::<Vec<_>>();
+    let devs = (0..3).map(|bus_id| Device { bus_id }).collect::<Vec<_>>();
 
-    let tasks: Vec<MyTask> = (0..10)
-        .map(|i| MyTask {
-            id: i,
-            time: Duration::from_millis(2000),
+    (0..10)
+        .into_par_iter()
+        .map(|i| {
+            schedule(&devs, move |dev| {
+                println!("Scheduled task{} on device {}!", i, dev.name());
+                thread::sleep(Duration::from_millis(2000));
+                println!("Done task {}!", i);
+            });
         })
-        .collect();
-
-    for t in tasks.into_iter() {
-        scheduler
-            .lock()
-            .unwrap()
-            .schedule(0, &format!("{:?}", t), Box::new(t), &resources);
-    }
-
-    thread::sleep(Duration::from_millis(3000));
+        .collect::<Vec<_>>();
 }
