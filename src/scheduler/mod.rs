@@ -390,7 +390,7 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
     }
 
     fn perform_task(&self, task: &Task<R>) -> Result<(), Error> {
-        let _lock = self.lock()?;
+        let lock = self.lock()?;
 
         let preemption_checker = PreemptionChecker {
             dir: self.dir.clone(),
@@ -399,10 +399,13 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
         let resource = self.resource.clone();
         let executable = task.executable.clone();
         thread::spawn(move || {
+            let captured_lock = lock;
             executable.execute(&resource, &preemption_checker);
+
+            // Lock is dropped, and therefore released here, at end of scope after task has been performed.
         });
+
         Ok(())
-        // Lock is dropped, and therefore released here, at end of scope.
     }
 }
 
@@ -632,5 +635,70 @@ mod test {
         );
 
         assert_eq!(expected, *RESULT_STATE.lock().unwrap());
+    }
+
+    lazy_static! {
+        static ref SCHEDULER2: Mutex<Scheduler::<Rsrc>> = Mutex::new(
+            Scheduler::<Rsrc>::new_with_poll_interval(
+                tempfile::tempdir().unwrap().into_path(),
+                TEST_POLL_INTERVAL
+            )
+            .expect("Failed to create scheduler"),
+        );
+        static ref GUARD_FAILURE: Mutex<bool> = Mutex::new(false);
+        static ref RESOURCES: Vec<Arc<Rsrc>> =
+            { (0..3).map(|id| Arc::new(Rsrc { id })).collect::<Vec<_>>() };
+        static ref RESOURCE_LOCKS: HashMap<String, Mutex<()>> = {
+            let mut map = HashMap::new();
+            for rsrc in RESOURCES.iter() {
+                map.insert(rsrc.name(), Mutex::new(()));
+            }
+            map
+        };
+    }
+
+    #[derive(Debug)]
+    struct MyTask {
+        id: usize,
+        time: Duration,
+    }
+
+    impl<R: Resource> Executable<R> for MyTask {
+        fn execute(&self, resource: &R, _p: &dyn Preemption<R>) {
+            let mutex = &RESOURCE_LOCKS[&resource.name()];
+            // No more than one task should be able to run on a single resource at a time!
+            let lock = match mutex.try_lock() {
+                Ok(lock) => lock,
+                Err(_) => {
+                    *GUARD_FAILURE.lock().unwrap() = true;
+                    return;
+                }
+            };
+            thread::sleep(self.time);
+        }
+    }
+
+    #[test]
+    fn test_guards() {
+        let scheduler = &*SCHEDULER2;
+        let scheduler_handle = Scheduler::start(scheduler).expect("Failed to start scheduler.");
+
+        let tasks: Vec<MyTask> = (0..10)
+            .map(|i| MyTask {
+                id: i,
+                time: Duration::from_millis(2000),
+            })
+            .collect();
+
+        for t in tasks.into_iter() {
+            scheduler
+                .lock()
+                .unwrap()
+                .schedule(0, &format!("{:?}", t), Box::new(t), &RESOURCES);
+        }
+
+        thread::sleep(Duration::from_millis(3000));
+
+        assert!(!*GUARD_FAILURE.lock().unwrap());
     }
 }
