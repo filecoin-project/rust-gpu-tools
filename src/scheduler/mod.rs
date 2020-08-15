@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use self::{
     resource_lock::ResourceLock,
-    task::{Executable, FnTask, Preemption, Task},
+    task::{Preemption, Task},
     task_file::TaskFile,
 };
 
@@ -113,7 +113,7 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
         &mut self,
         priority: usize,
         name: &str,
-        task: Box<dyn Executable<R> + Sync + Send>,
+        task: Box<dyn Fn(&R, &dyn Preemption<R>) -> () + Sync + Send>,
         resources: &Vec<R>,
     ) -> Result<(), Error> {
         resources.iter().for_each(|r| {
@@ -146,15 +146,16 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
     {
         let (tx, rx) = mpsc::channel();
         let tx = Mutex::new(tx);
-        let t = FnTask::<R, _, ()> {
-            func: move |dev| {
-                let result = f(dev);
+        self.schedule(
+            priority,
+            name,
+            Box::new(move |r, _| {
+                let result = f(r);
                 tx.lock().unwrap().send(result).unwrap();
-            },
-            _r: PhantomData::<R>,
-        };
-        self.schedule(priority, name, Box::new(t), resources)
-            .unwrap();
+            }),
+            resources,
+        )
+        .unwrap();
         Ok(rx)
     }
 
@@ -419,10 +420,10 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
         };
 
         let resource = self.resource.clone();
-        let executable = task.executable.clone();
+        let executable = Arc::clone(&task.executable);
         thread::spawn(move || {
             let captured_lock = lock;
-            executable.execute(&resource, &preemption_checker);
+            (executable)(&resource, &preemption_checker);
 
             // Lock is dropped, and therefore released here, at end of scope after task has been performed.
         });
@@ -452,68 +453,6 @@ mod test {
     impl Resource for Rsrc {
         fn dir_id(&self) -> String {
             self.id.to_string()
-        }
-    }
-
-    struct Dummy<R> {
-        _r: PhantomData<R>,
-    }
-    impl<R: Resource> Preemption<R> for Dummy<R> {
-        fn should_preempt_now(&self, _task: &Task<R>) -> bool {
-            false
-        }
-    }
-
-    #[derive(Debug)]
-    struct Task0 {
-        id: usize,
-        time: Duration,
-    }
-
-    impl<R: Resource> Executable<R> for Task0 {
-        fn execute(&self, _resource: &R, _p: &dyn Preemption<R>) {
-            (*RESULT_STATE).lock().unwrap().push(0);
-            thread::sleep(self.time);
-        }
-    }
-
-    #[derive(Debug)]
-    struct Task1 {
-        id: usize,
-    }
-
-    impl<R: Resource> Executable<R> for Task1 {
-        fn execute(&self, _resource: &R, _p: &dyn Preemption<R>) {
-            (*RESULT_STATE).lock().unwrap().push(self.id);
-        }
-    }
-
-    #[derive(Debug)]
-    struct Task2 {
-        id: usize,
-        input: usize,
-        out_chan_internal: Mutex<mpsc::Sender<usize>>,
-    }
-
-    impl Task2 {
-        fn create(id: usize, input: usize) -> (Self, mpsc::Receiver<usize>) {
-            let (out_tx, out_rx) = mpsc::channel();
-            (
-                Self {
-                    id,
-                    input,
-                    out_chan_internal: Mutex::new(out_tx),
-                },
-                out_rx,
-            )
-        }
-    }
-
-    impl<R: Resource> Executable<R> for Task2 {
-        fn execute(&self, _resource: &R, _p: &dyn Preemption<R>) {
-            let input = self.input;
-            let result = input * input;
-            self.out_chan_internal.lock().unwrap().send(result);
         }
     }
 
@@ -548,74 +487,75 @@ mod test {
 
         let scheduler_handle = Scheduler::start(scheduler).expect("Failed to start scheduler.");
 
-        let tasks0 = (0..10)
-            .map(|id| Task0 {
-                id,
-                time: Duration::from_millis(100),
-            })
-            .collect::<Vec<_>>();
-        for (i, task) in tasks0.into_iter().take(num_resources).enumerate() {
+        for i in 0..num_resources {
             /// Schedule a slow task to tie up all the resources
             /// while the next batch of `Task1`s is scheduled.
             let priority = 0;
             expected.push(0);
             scheduler.lock().unwrap().schedule(
                 priority,
-                &format!("{:?}", task),
-                Box::new(task),
+                &format!("Task0[{}]", i),
+                Box::new(|r, _| {
+                    (*RESULT_STATE).lock().unwrap().push(0);
+                    thread::sleep(Duration::from_millis(100));
+                }),
                 &resources,
             );
         }
 
-        let tasks1 = (0..5).map(|id| Task1 { id }).collect::<Vec<_>>();
         let tasks1_len = 5;
-        for (i, task) in tasks1.into_iter().enumerate() {
+        for id in 0..tasks1_len {
             // When tasks are added very quickly (relative to the poll interval),
             // they should be performed in order of their priority.
             // In this group, we set priority to be the 'inverse' of task id.
             // So task 0 has a high-numbered priority and should be performed last.
             // Therefore, we push the highest id onto `expected` first.
-            let priority = tasks1_len - i - 1;
+            let priority = tasks1_len - id - 1;
             expected.push(priority);
             scheduler.lock().unwrap().schedule(
                 priority,
-                &format!("{:?}", task),
-                Box::new(task),
+                &format!("Task1[{}]", id),
+                Box::new(move |_, _| {
+                    (*RESULT_STATE).lock().unwrap().push(id);
+                }),
                 &resources,
             );
         }
         thread::sleep(Duration::from_millis(100));
 
-        let tasks1 = (0..5).map(|id| Task1 { id }).collect::<Vec<_>>();
-        for (i, task) in tasks1.into_iter().enumerate() {
+        for id in 0..tasks1_len {
             // This example is like the previous, except that we sleep for twice the length of the poll interval
             // between each call to `schedule`. TODO: set the poll interval explicitly in the test.
             // Because each task is fully processed, they are performed in the order scheduled.
-            let priority = tasks1_len - i - 1;
-            expected.push(i);
+            let priority = tasks1_len - id - 1;
+            expected.push(id);
             thread::sleep(Duration::from_millis(200));
             scheduler.lock().unwrap().schedule(
                 priority,
-                &format!("{:?}", task),
-                Box::new(task),
+                &format!("Task1[{}]", id),
+                Box::new(move |_, _| {
+                    (*RESULT_STATE).lock().unwrap().push(id);
+                }),
                 &resources,
             );
         }
         thread::sleep(Duration::from_millis(100));
 
-        let tasks1 = (0..5).map(|id| Task1 { id }).collect::<Vec<_>>();
-        for (i, task) in tasks1.into_iter().enumerate() {
+        for id in 0..tasks1_len {
             // In this example, tasks are added quickly and with priority matching id.
             // We therefore expect them to be performed in the order scheduled.
             // This case is somewhat trivial.
-            expected.push(i);
+            expected.push(id);
             scheduler.lock().unwrap().schedule(
-                i,
-                &format!("{:?}", task),
-                Box::new(task),
+                id,
+                &format!("Task1[{}]", id),
+                Box::new(move |_, _| {
+                    (*RESULT_STATE).lock().unwrap().push(id);
+                }),
                 &resources,
             );
         }
+
         thread::sleep(Duration::from_millis(100));
 
         let tasks2_len = 5;
@@ -626,14 +566,20 @@ mod test {
             // in the expected order (so scheduling does not come into play).
             // However, it does demonstrate and ensure use and usability of channels
             // to provide input to and receive output from tasks.
+            let (tx, rx) = mpsc::channel();
+            out_rxs.push(rx);
+            let tx = Mutex::new(tx);
+
             let priority = tasks2_len - i - 1;
-            let (task, out) = Task2::create(i, i);
-            out_rxs.push(out);
             expected.push(i * i);
             scheduler.lock().unwrap().schedule(
                 priority,
-                &format!("{:?}", task),
-                Box::new(task),
+                &format!("Task2[{}]", i),
+                Box::new(move |_, _| {
+                    let input = i;
+                    let result = input * input;
+                    tx.lock().unwrap().send(result).unwrap();
+                }),
                 &resources,
             );
         }
@@ -675,44 +621,29 @@ mod test {
         };
     }
 
-    #[derive(Debug)]
-    struct MyTask {
-        id: usize,
-        time: Duration,
-    }
-
-    impl<R: Resource> Executable<R> for MyTask {
-        fn execute(&self, resource: &R, _p: &dyn Preemption<R>) {
-            let mutex = &RESOURCE_LOCKS[&resource.name()];
-            // No more than one task should be able to run on a single resource at a time!
-            let lock = match mutex.try_lock() {
-                Ok(lock) => lock,
-                Err(_) => {
-                    *GUARD_FAILURE.lock().unwrap() = true;
-                    return;
-                }
-            };
-            thread::sleep(self.time);
-        }
-    }
-
     #[test]
     fn test_guards() {
-        let scheduler = &*SCHEDULER3;
+        let scheduler = &*SCHEDULER2;
         let scheduler_handle = Scheduler::start(scheduler).expect("Failed to start scheduler.");
 
-        let tasks: Vec<MyTask> = (0..10)
-            .map(|i| MyTask {
-                id: i,
-                time: Duration::from_millis(2000),
-            })
-            .collect();
-
-        for t in tasks.into_iter() {
-            scheduler
-                .lock()
-                .unwrap()
-                .schedule(0, &format!("{:?}", t), Box::new(t), &*RESOURCES);
+        for id in 0..10 {
+            scheduler.lock().unwrap().schedule(
+                0,
+                &format!("MyTask[{}]", id),
+                Box::new(move |r, _| {
+                    let mutex = &RESOURCE_LOCKS[&r.name()];
+                    // No more than one task should be able to run on a single resource at a time!
+                    let lock = match mutex.try_lock() {
+                        Ok(lock) => lock,
+                        Err(_) => {
+                            *GUARD_FAILURE.lock().unwrap() = true;
+                            return;
+                        }
+                    };
+                    thread::sleep(Duration::from_millis(2000));
+                }),
+                &*RESOURCES,
+            );
         }
 
         thread::sleep(Duration::from_millis(3000));
