@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use super::{Resource, ResourceScheduler};
@@ -45,5 +46,24 @@ impl<'a, R: Resource> Task<R> {
 
     pub fn execute(&self, resource: &R, preemption: &dyn Preemption<R>) {
         self.executable.execute(resource, preemption)
+    }
+}
+
+#[derive(Debug)]
+pub struct FnTask<R: Resource, F, T>
+where
+    F: Fn(&R) -> T,
+{
+    // id: usize,
+    pub(crate) func: F,
+    pub(crate) _r: PhantomData<R>,
+}
+
+impl<R: Resource, F, T> Executable<R> for FnTask<R, F, T>
+where
+    F: Fn(&R) -> T,
+{
+    fn execute(&self, resource: &R, _p: &dyn Preemption<R>) {
+        (self.func)(resource);
     }
 }

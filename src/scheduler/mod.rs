@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use self::{
     resource_lock::ResourceLock,
-    task::{Executable, Preemption, Task},
+    task::{Executable, FnTask, Preemption, Task},
     task_file::TaskFile,
 };
 
@@ -95,7 +95,6 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
                     if should_stop() {
                         break;
                     };
-
                     s.handle_next().expect("failed in handle_next"); // FIXME
                 }
                 thread::sleep(poll_interval);
@@ -130,9 +129,33 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
             task_ident,
             task,
             resources.clone(),
-            &self.resource_schedulers,
             self.poll_interval,
         )
+    }
+
+    pub fn schedule_fn<F: 'static, T: 'static>(
+        &mut self,
+        priority: usize,
+        name: &str,
+        resources: &Vec<R>,
+        f: F,
+    ) -> Result<mpsc::Receiver<T>, Error>
+    where
+        F: Fn(&R) -> T + Sync + Send,
+        T: Sync + Send,
+    {
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        let t = FnTask::<R, _, ()> {
+            func: move |dev| {
+                let result = f(dev);
+                tx.lock().unwrap().send(result).unwrap();
+            },
+            _r: PhantomData::<R>,
+        };
+        self.schedule(priority, name, Box::new(t), resources)
+            .unwrap();
+        Ok(rx)
     }
 
     pub fn stop(&self) -> Result<(), mpsc::SendError<()>> {
@@ -200,7 +223,6 @@ impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
         task_ident: TaskIdent,
         task: Task<R>,
         resources: Vec<R>,
-        resource_schedulers: &HashMap<PathBuf, ResourceScheduler<R>>,
         poll_interval: Duration,
     ) -> Result<(), Error> {
         self.own_tasks.insert(task_ident.clone(), Mutex::new(task));
@@ -338,7 +360,7 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
         let mut performed_task = already_performed;
         {
             // Lock the task so a sibling won't remove it.
-            let mut guard_result = root_scheduler
+            let guard_result = root_scheduler
                 .own_tasks
                 .get(&ident)
                 .expect("own task missing")
@@ -676,7 +698,7 @@ mod test {
 
     #[test]
     fn test_guards() {
-        let scheduler = &*SCHEDULER2;
+        let scheduler = &*SCHEDULER3;
         let scheduler_handle = Scheduler::start(scheduler).expect("Failed to start scheduler.");
 
         let tasks: Vec<MyTask> = (0..10)
@@ -690,11 +712,48 @@ mod test {
             scheduler
                 .lock()
                 .unwrap()
-                .schedule(0, &format!("{:?}", t), Box::new(t), &RESOURCES);
+                .schedule(0, &format!("{:?}", t), Box::new(t), &*RESOURCES);
         }
 
         thread::sleep(Duration::from_millis(3000));
 
         assert!(!*GUARD_FAILURE.lock().unwrap());
+    }
+
+    lazy_static! {
+        static ref SCHEDULER3: Mutex<Scheduler::<Rsrc>> = Mutex::new(
+            Scheduler::<Rsrc>::new_with_poll_interval(
+                tempfile::tempdir().unwrap().into_path(),
+                Duration::from_millis(1),
+            )
+            .expect("Failed to create scheduler"),
+        );
+    }
+
+    #[test]
+
+    fn test_schedule_fn() {
+        let scheduler_handle = Scheduler::start(&*SCHEDULER3).expect("Failed to start scheduler.");
+        thread::sleep(Duration::from_millis(300));
+
+        let n = 10;
+        let resources = (0..n).map(|id| Rsrc { id }).collect::<Vec<_>>();
+        let rxs = (0..n)
+            .map(|i| {
+                (*SCHEDULER3)
+                    .lock()
+                    .unwrap()
+                    .schedule_fn(n - i, &format!("task {}", i), &resources, move |rsrc| i)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        // This only tests that every function is run and returns its expected value.
+        // The order results is determined by the order in which the task functions are scheduled,
+        // not on that in which they are performed. Actual scheduling is not exercised here.
+        let results = rxs.iter().map(|rx| rx.recv().unwrap()).collect::<Vec<_>>();
+        let mut expected = (0..n).collect::<Vec<_>>();
+
+        assert_eq!(expected, results);
     }
 }
