@@ -1,9 +1,11 @@
+extern crate futures;
 extern crate rand;
 
 use ::lazy_static::lazy_static;
 
 use self::task_ident::TaskIdent;
 use fs2::FileExt;
+use futures::{future, Future};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use std::cmp::Ordering;
@@ -106,10 +108,88 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
         })
     }
 
-    /// `cleanup` performs any (currently none) cleanup required when a scheduler terminates.
-    fn cleanup(&self) {}
+    /// Schedule `task_function` and return a `Receiver` for the result.
+    pub fn schedule<F: 'static, T: 'static>(
+        &mut self,
+        priority: usize,
+        name: &str,
+        resources: &Vec<R>,
+        task_function: F,
+    ) -> mpsc::Receiver<T>
+    where
+        F: Fn(&R) -> T + Sync + Send,
+        T: Sync + Send,
+    {
+        let (tx, rx) = mpsc::channel();
+        let tx_mutex = Mutex::new(tx);
+        self.schedule_aux(
+            priority,
+            name,
+            Box::new(move |r, _| {
+                let result = task_function(r);
+                (*tx_mutex.lock().unwrap()).send(result);
+            }),
+            resources,
+        )
+        .unwrap();
+        rx
+    }
 
-    pub fn schedule(
+    /// Schedule `task_function` and block until result is available, then return it.
+    pub fn schedule_wait<F: 'static, T: 'static>(
+        &mut self,
+        priority: usize,
+        name: &str,
+        resources: &Vec<R>,
+        task_function: F,
+    ) -> Result<T, mpsc::RecvError>
+    where
+        F: Fn(&R) -> T + Sync + Send,
+        T: Sync + Send,
+    {
+        let rx = self.schedule(priority, name, resources, task_function);
+
+        rx.recv()
+    }
+
+    /// Schedule `task_function` and return a `Future` for the value.
+    pub fn schedule_future<F: 'static, T: 'static>(
+        &mut self,
+        priority: usize,
+        name: &str,
+        resources: &Vec<R>,
+        task_function: F,
+    ) -> futures::channel::oneshot::Receiver<T>
+    where
+        F: Fn(&R) -> T + Sync + Send,
+        T: Sync + Send,
+    {
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let tx_mutex = Arc::new(Mutex::new(Some(tx)));
+        self.schedule_aux(
+            priority,
+            name,
+            Box::new(move |r, _| {
+                let result = task_function(r);
+
+                if let Some(tx) = tx_mutex.lock().unwrap().take() {
+                    tx.send(result);
+                }
+            }),
+            resources,
+        )
+        .unwrap();
+        rx
+    }
+
+    pub fn stop(&self) -> Result<(), mpsc::SendError<()>> {
+        if let Some(c) = self.control_chan.as_ref() {
+            c.send(())?
+        };
+        Ok(())
+    }
+
+    fn schedule_aux(
         &mut self,
         priority: usize,
         name: &str,
@@ -133,38 +213,8 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
         )
     }
 
-    pub fn schedule_fn<F: 'static, T: 'static>(
-        &mut self,
-        priority: usize,
-        name: &str,
-        resources: &Vec<R>,
-        f: F,
-    ) -> Result<mpsc::Receiver<T>, Error>
-    where
-        F: Fn(&R) -> T + Sync + Send,
-        T: Sync + Send,
-    {
-        let (tx, rx) = mpsc::channel();
-        let tx = Mutex::new(tx);
-        self.schedule(
-            priority,
-            name,
-            Box::new(move |r, _| {
-                let result = f(r);
-                tx.lock().unwrap().send(result).unwrap();
-            }),
-            resources,
-        )
-        .unwrap();
-        Ok(rx)
-    }
-
-    pub fn stop(&self) -> Result<(), mpsc::SendError<()>> {
-        if let Some(c) = self.control_chan.as_ref() {
-            c.send(())?
-        };
-        Ok(())
-    }
+    /// `cleanup` performs any (currently none) cleanup required when a scheduler terminates.
+    fn cleanup(&self) {}
 
     fn ensure_resource_scheduler(&mut self, resource: R) {
         let dir = self
@@ -422,7 +472,7 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
         let resource = self.resource.clone();
         let executable = Arc::clone(&task.executable);
         thread::spawn(move || {
-            let captured_lock = lock;
+            let _captured_lock = lock;
             (executable)(&resource, &preemption_checker);
 
             // Lock is dropped, and therefore released here, at end of scope after task has been performed.
@@ -444,6 +494,8 @@ impl<R: Resource> Preemption<R> for PreemptionChecker {
 
 mod test {
     use super::*;
+    use crate::scheduler::futures::FutureExt;
+    use futures::Future;
 
     #[derive(Clone, Debug)]
     struct Rsrc {
@@ -495,11 +547,11 @@ mod test {
             scheduler.lock().unwrap().schedule(
                 priority,
                 &format!("Task0[{}]", i),
-                Box::new(|r, _| {
+                &resources,
+                |r| {
                     (*RESULT_STATE).lock().unwrap().push(0);
                     thread::sleep(Duration::from_millis(100));
-                }),
-                &resources,
+                },
             );
         }
 
@@ -515,10 +567,10 @@ mod test {
             scheduler.lock().unwrap().schedule(
                 priority,
                 &format!("Task1[{}]", id),
-                Box::new(move |_, _| {
-                    (*RESULT_STATE).lock().unwrap().push(id);
-                }),
                 &resources,
+                move |_| {
+                    (*RESULT_STATE).lock().unwrap().push(id);
+                },
             );
         }
         thread::sleep(Duration::from_millis(100));
@@ -533,10 +585,10 @@ mod test {
             scheduler.lock().unwrap().schedule(
                 priority,
                 &format!("Task1[{}]", id),
-                Box::new(move |_, _| {
-                    (*RESULT_STATE).lock().unwrap().push(id);
-                }),
                 &resources,
+                move |_| {
+                    (*RESULT_STATE).lock().unwrap().push(id);
+                },
             );
         }
         thread::sleep(Duration::from_millis(100));
@@ -549,10 +601,10 @@ mod test {
             scheduler.lock().unwrap().schedule(
                 id,
                 &format!("Task1[{}]", id),
-                Box::new(move |_, _| {
-                    (*RESULT_STATE).lock().unwrap().push(id);
-                }),
                 &resources,
+                move |_| {
+                    (*RESULT_STATE).lock().unwrap().push(id);
+                },
             );
         }
 
@@ -575,12 +627,12 @@ mod test {
             scheduler.lock().unwrap().schedule(
                 priority,
                 &format!("Task2[{}]", i),
-                Box::new(move |_, _| {
+                &resources,
+                move |_| {
                     let input = i;
                     let result = input * input;
                     tx.lock().unwrap().send(result).unwrap();
-                }),
-                &resources,
+                },
             );
         }
 
@@ -630,7 +682,8 @@ mod test {
             scheduler.lock().unwrap().schedule(
                 0,
                 &format!("MyTask[{}]", id),
-                Box::new(move |r, _| {
+                &*RESOURCES,
+                move |r| {
                     let mutex = &RESOURCE_LOCKS[&r.name()];
                     // No more than one task should be able to run on a single resource at a time!
                     let lock = match mutex.try_lock() {
@@ -640,13 +693,12 @@ mod test {
                             return;
                         }
                     };
-                    thread::sleep(Duration::from_millis(2000));
-                }),
-                &*RESOURCES,
+                    thread::sleep(Duration::from_millis(100));
+                },
             );
         }
 
-        thread::sleep(Duration::from_millis(3000));
+        thread::sleep(Duration::from_millis(100));
 
         assert!(!*GUARD_FAILURE.lock().unwrap());
     }
@@ -669,20 +721,32 @@ mod test {
 
         let n = 10;
         let resources = (0..n).map(|id| Rsrc { id }).collect::<Vec<_>>();
-        let rxs = (0..n)
+        let mut futures = (0..n)
             .map(|i| {
-                (*SCHEDULER3)
-                    .lock()
-                    .unwrap()
-                    .schedule_fn(n - i, &format!("task {}", i), &resources, move |rsrc| i)
-                    .unwrap()
+                Some((*SCHEDULER3).lock().unwrap().schedule_future(
+                    n - i,
+                    &format!("task {}", i),
+                    &resources,
+                    move |rsrc| i,
+                ))
             })
             .collect::<Vec<_>>();
 
         // This only tests that every function is run and returns its expected value.
         // The order results is determined by the order in which the task functions are scheduled,
         // not on that in which they are performed. Actual scheduling is not exercised here.
-        let results = rxs.iter().map(|rx| rx.recv().unwrap()).collect::<Vec<_>>();
+        let mut results = Vec::new();
+
+        thread::sleep(Duration::from_millis(100));
+
+        for future in futures.iter_mut() {
+            if let Some(future) = future.take() {
+                if let Some(value) = future.now_or_never() {
+                    results.push(value.unwrap());
+                }
+            }
+        }
+
         let mut expected = (0..n).collect::<Vec<_>>();
 
         assert_eq!(expected, results);
