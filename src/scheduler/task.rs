@@ -17,20 +17,4 @@ impl<'a, R: Resource> Preemption<R> for ResourceScheduler<R> {
     }
 }
 
-pub struct Task<R: Resource + 'static> {
-    /// These are the resources for which the `Task` has been requested to be scheduled,
-    /// in order of preference. It is guaranteed that the `Task` will be scheduled on only one of these.
-    pub(crate) executable: Arc<Box<dyn Fn(&R, &dyn Preemption<R>) -> () + Sync + Send>>,
-}
-
-impl<'a, R: Resource> Task<R> {
-    pub fn new(executable: Arc<Box<dyn Fn(&R, &dyn Preemption<R>) -> () + Sync + Send>>) -> Self {
-        Self {
-            executable: executable,
-        }
-    }
-
-    pub fn execute(&self, resource: &R, preemption: &dyn Preemption<R>) {
-        (self.executable)(resource, preemption)
-    }
-}
+pub type Task<R: Resource + 'static> = Arc<Box<dyn Fn(&R, &dyn Preemption<R>) -> () + Sync + Send>>;
