@@ -249,6 +249,9 @@ struct SchedulerRoot<R: Resource + 'static> {
     task_files: HashMap<TaskIdent, HashSet<TaskFile>>,
     /// Each `Task` (identified uniquely by a `TaskIdent`) is protected by a `Mutex`.
     own_tasks: HashMap<TaskIdent, Mutex<Task<R>>>,
+    /// `TaskIdent`s are added to `assigned_tasks` when they have been assigned to a resource and are being performed.
+    /// Once this happens, they must not be enqueued on another resource, since that might lead to double assignment.
+    assigned_tasks: HashSet<TaskIdent>,
     ident_counter: usize,
 }
 
@@ -261,6 +264,7 @@ impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
             root,
             task_files: Default::default(),
             own_tasks: Default::default(),
+            assigned_tasks: Default::default(),
             ident_counter: 0,
         })
     }
@@ -283,20 +287,32 @@ impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
             let dir = self.root.join(resource.dir_id());
             create_dir_all(&dir)?;
         }
+
+        // Ensure task ident's entry exists.
+        // NOTE/TODO: It shouldn't already exist, so it is should be safe to just create it.
+        self.task_files
+            .entry(task_ident.clone())
+            .or_insert(Default::default());
+
         for resource in resources.iter() {
+            if self.assigned_tasks.get(&task_ident).is_some() {
+                // If the task has been assigned to a resource already (having been scheduled here on an earlier iteration)
+                // then no further enqueueing is required.
+                break;
+            }
             let dir = self.root.join(resource.dir_id());
             let task_file = task_ident.enqueue_in_dir(&dir)?;
 
-            self.task_files
-                .entry(task_ident.clone())
-                .or_insert(Default::default())
-                .insert(task_file);
+            self.task_files.entry(task_ident.clone()).and_modify(|e| {
+                e.insert(task_file);
+            });
 
-            // In order to respect resource preference order, give each resource (in order)
-            // one chance to be performed if resource is free.
-            // This depends on `schedule` not being called from the polling loop's thread.
             thread::sleep(poll_interval);
         }
+        // Task assignment is only tracked to prevent post-assignment enqueuing.
+        // so no more tracking is required for this task, now that enqueueing is complete.
+        self.assigned_tasks.remove(&task_ident);
+
         Ok(())
     }
 }
@@ -389,7 +405,7 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
 
         if is_own {
             // Task is owned by this process.
-            self.handle_own(&ident, &mut self.root_scheduler.lock().unwrap(), false);
+            self.handle_own(&ident, &mut self.root_scheduler.lock().unwrap());
         } else {
             if !locked {
                 // The next-up task is unlocked, so it can be destroyed —
@@ -406,9 +422,8 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
         &self,
         ident: &TaskIdent,
         root_scheduler: &mut SchedulerRoot<R>,
-        already_performed: bool,
     ) -> Result<(), Error> {
-        let mut performed_task = already_performed;
+        let mut assigned_task = false;
         {
             // Lock the task so a sibling won't remove it.
             let guard_result = root_scheduler
@@ -420,8 +435,6 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
             if let Ok(guard) = guard_result {
                 let task = guard;
 
-                let mut to_destroy_later = None;
-
                 // We have the lock for this task, so we may destroy the sibling TaskFiles.
                 if let Some(all_task_files) = root_scheduler.task_files.get(&ident) {
                     // FIXME: unwrap
@@ -430,31 +443,31 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
                         if !task_file.path.starts_with(self.dir.clone()) {
                             // We already hold the lock for all of our task files, so this is okay.
                             task_file.destroy().unwrap();
-                        // TODO: check that destroy fails gracefully if already gone.
-                        } else {
-                            to_destroy_later = Some(task_file);
-                        }
+                            // TODO: check that destroy fails gracefully if already gone.
+                        };
                     });
                 }
 
+                root_scheduler.assigned_tasks.insert(ident.clone());
                 self.perform_task(&*task)?;
                 // NOTE: We must defer removing from `self.own_tasks` because the map is borrowed in this scope above.
-                performed_task = true;
+                assigned_task = true;
 
-                // Finally, destroy this `TaskFile`, too — assuming it is necessary.
-                if let Some(task_file) = to_destroy_later {
-                    // We already hold the lock for this task file, so this is okay.
-                    task_file.destroy().unwrap()
-                };
-            } else {
-                // Task `Mutex` was already locked, which means this process has already assigned it to a different resource.
-                // Do nothing and allow it to be cleaned up (removed from this queue) as part of that assignment.
-            }
+                // Task has been assigned, destroy all task files.
+                // FIXME: Actually, *this* task file should not be destroyed until task completes.
+                // That ensures we know which task is running on a locked resource.
+                // Destroying it now should not lead to correctness problems apart from the bookkeeping noted above.
+                if let Some(all_task_files) = root_scheduler.task_files.get(&ident) {
+                    all_task_files.iter().for_each(|task_file| {
+                        task_file.destroy();
+                    });
+                }
+            };
 
             // lock is dropped here
         }
 
-        if performed_task {
+        if assigned_task {
             // Now we can remove (see NOTE above).
             root_scheduler.own_tasks.remove(&ident);
         }
@@ -733,7 +746,7 @@ mod test {
             .collect::<Vec<_>>();
 
         // This only tests that every function is run and returns its expected value.
-        // The order results is determined by the order in which the task functions are scheduled,
+        // The order of esults is determined by the order in which the task functions are scheduled,
         // not on that in which they are performed. Actual scheduling is not exercised here.
         let mut results = Vec::new();
 
