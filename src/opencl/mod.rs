@@ -23,9 +23,14 @@ impl<T> Buffer<T> {
         self.buffer.len() / std::mem::size_of::<T>()
     }
 
-    pub fn write_from(&mut self, data: &[T]) -> GPUResult<()> {
-        assert!(data.len() <= self.length());
+    pub fn write_from(&mut self, offset: usize, data: &[T]) -> GPUResult<()> {
+        assert!(offset + data.len() <= self.length());
         self.buffer
+            .create_sub_buffer(
+                None,
+                offset * std::mem::size_of::<T>(),
+                data.len() * std::mem::size_of::<T>(),
+            )?
             .write(unsafe {
                 std::slice::from_raw_parts(
                     data.as_ptr() as *const T as *const u8,
@@ -36,9 +41,14 @@ impl<T> Buffer<T> {
         Ok(())
     }
 
-    pub fn read_into(&self, data: &mut [T]) -> GPUResult<()> {
-        assert!(data.len() <= self.length());
+    pub fn read_into(&self, offset: usize, data: &mut [T]) -> GPUResult<()> {
+        assert!(offset + data.len() <= self.length());
         self.buffer
+            .create_sub_buffer(
+                None,
+                offset * std::mem::size_of::<T>(),
+                data.len() * std::mem::size_of::<T>(),
+            )?
             .read(unsafe {
                 std::slice::from_raw_parts_mut(
                     data.as_mut_ptr() as *mut T as *mut u8,
