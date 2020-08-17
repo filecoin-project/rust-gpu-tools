@@ -265,6 +265,8 @@ impl Program {
     }
 }
 
+pub use ocl::OclPrm as Parameter;
+
 pub trait KernelArgument<'a> {
     fn push(&self, kernel: &mut Kernel<'a>);
 }
