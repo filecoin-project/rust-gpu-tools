@@ -125,10 +125,10 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
         self.schedule_aux(
             priority,
             name,
-            Box::new(move |r, _| {
+            Arc::new(Box::new(move |r, _| {
                 let result = task_function(r);
                 (*tx_mutex.lock().unwrap()).send(result);
-            }),
+            })),
             resources,
         )
         .unwrap();
@@ -169,13 +169,13 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
         self.schedule_aux(
             priority,
             name,
-            Box::new(move |r, _| {
+            Arc::new(Box::new(move |r, _| {
                 let result = task_function(r);
 
                 if let Some(tx) = tx_mutex.lock().unwrap().take() {
                     tx.send(result);
                 }
-            }),
+            })),
             resources,
         )
         .unwrap();
@@ -193,7 +193,7 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
         &mut self,
         priority: usize,
         name: &str,
-        task: Box<dyn Fn(&R, &dyn Preemption<R>) -> () + Sync + Send>,
+        task: Task<R>,
         resources: &Vec<R>,
     ) -> Result<(), Error> {
         resources.iter().for_each(|r| {
@@ -204,7 +204,6 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
             .lock()
             .unwrap()
             .new_ident(priority, name);
-        let task = Task::new(Arc::new(task));
         self.scheduler_root.lock().unwrap().schedule(
             task_ident,
             task,
@@ -483,7 +482,7 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
         };
 
         let resource = self.resource.clone();
-        let executable = Arc::clone(&task.executable);
+        let executable = Arc::clone(task);
         thread::spawn(move || {
             let _captured_lock = lock;
             (executable)(&resource, &preemption_checker);
