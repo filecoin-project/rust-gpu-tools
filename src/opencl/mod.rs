@@ -4,6 +4,7 @@ mod utils;
 pub use error::*;
 use sha2::{Digest, Sha256};
 use std::fmt::Write;
+use std::hash::{Hash, Hasher};
 
 pub type BusId = u32;
 
@@ -23,9 +24,14 @@ impl<T> Buffer<T> {
         self.buffer.len() / std::mem::size_of::<T>()
     }
 
-    pub fn write_from(&mut self, data: &[T]) -> GPUResult<()> {
-        assert!(data.len() <= self.length());
+    pub fn write_from(&mut self, offset: usize, data: &[T]) -> GPUResult<()> {
+        assert!(offset + data.len() <= self.length());
         self.buffer
+            .create_sub_buffer(
+                None,
+                offset * std::mem::size_of::<T>(),
+                data.len() * std::mem::size_of::<T>(),
+            )?
             .write(unsafe {
                 std::slice::from_raw_parts(
                     data.as_ptr() as *const T as *const u8,
@@ -36,9 +42,14 @@ impl<T> Buffer<T> {
         Ok(())
     }
 
-    pub fn read_into(&self, data: &mut [T]) -> GPUResult<()> {
-        assert!(data.len() <= self.length());
+    pub fn read_into(&self, offset: usize, data: &mut [T]) -> GPUResult<()> {
+        assert!(offset + data.len() <= self.length());
         self.buffer
+            .create_sub_buffer(
+                None,
+                offset * std::mem::size_of::<T>(),
+                data.len() * std::mem::size_of::<T>(),
+            )?
             .read(unsafe {
                 std::slice::from_raw_parts_mut(
                     data.as_mut_ptr() as *mut T as *mut u8,
@@ -75,6 +86,20 @@ pub struct Device {
     device: ocl::Device,
 }
 
+impl Hash for Device {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.bus_id.hash(state);
+    }
+}
+
+impl PartialEq for Device {
+    fn eq(&self, other: &Self) -> bool {
+        self.bus_id == other.bus_id
+    }
+}
+
+impl Eq for Device {}
+
 impl Device {
     pub fn brand(&self) -> Brand {
         self.brand
@@ -87,6 +112,9 @@ impl Device {
     }
     pub fn is_little_endian(&self) -> GPUResult<bool> {
         Ok(utils::is_little_endian(self.device)?)
+    }
+    pub fn bus_id(&self) -> BusId {
+        self.bus_id
     }
 
     pub fn all() -> GPUResult<Vec<Device>> {
@@ -236,6 +264,8 @@ impl Program {
         Kernel::<'_> { builder }
     }
 }
+
+pub use ocl::OclPrm as Parameter;
 
 pub trait KernelArgument<'a> {
     fn push(&self, kernel: &mut Kernel<'a>);
