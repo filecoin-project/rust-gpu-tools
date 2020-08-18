@@ -64,8 +64,13 @@ pub trait Resource: Clone {
 pub struct Scheduler<R: Resource + Send + Sync + 'static> {
     scheduler_root: Arc<Mutex<SchedulerRoot<R>>>,
     resource_schedulers: HashMap<PathBuf, ResourceScheduler<R>>,
-    control_chan: Option<mpsc::Sender<()>>,
+    control_chan: Option<mpsc::Sender<Control>>,
     poll_interval: Duration,
+}
+
+pub enum Control {
+    Stop,
+    Finished(PathBuf, TaskIdent),
 }
 
 impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
@@ -84,20 +89,43 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
     }
 
     pub fn start(scheduler: &'static Mutex<Self>) -> Result<SchedulerHandle, Error> {
-        let (control_tx, control_rx) = mpsc::channel();
+        let (control_tx, control_rx) = mpsc::channel::<Control>();
+        let control_tx = Arc::new(Mutex::new(control_tx));
+        let control_tx_move = control_tx.clone();
         let handle = thread::spawn(move || {
             let poll_interval = scheduler.lock().unwrap().poll_interval;
-            let should_stop = || !control_rx.try_recv().is_err();
             loop {
-                if should_stop() {
-                    scheduler.lock().unwrap().cleanup();
-                    break;
-                };
                 for (_, s) in scheduler.lock().unwrap().resource_schedulers.iter_mut() {
-                    if should_stop() {
+                    s.handle_next(control_tx_move.clone())
+                        .expect("failed to schedule next task in handle_next");
+                }
+                match control_rx.try_recv() {
+                    Ok(Control::Stop) => {
+                        scheduler.lock().unwrap().cleanup();
                         break;
-                    };
-                    s.handle_next().expect("failed in handle_next"); // FIXME
+                    }
+                    Ok(Control::Finished(dir, task_ident)) => {
+                        scheduler.try_lock().map(|scheduler| {
+                            scheduler
+                                .scheduler_root
+                                .try_lock()
+                                .map(|mut scheduler_root| {
+                                    scheduler_root.task_files.remove(&task_ident);
+                                    if let Some(task_file) =
+                                        scheduler_root.task_files.get(&task_ident).map(|task_set| {
+                                            task_set
+                                                .iter()
+                                                .find(|t| (**t).path.starts_with(dir.clone()))
+                                        })
+                                    {
+                                        task_ident.try_destroy(&dir);
+                                        scheduler_root.own_tasks.remove(&task_ident);
+                                        scheduler_root.task_files.remove(&task_ident);
+                                    }
+                                });
+                        });
+                    }
+                    _ => (),
                 }
                 thread::sleep(poll_interval);
             }
@@ -182,9 +210,9 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
         rx
     }
 
-    pub fn stop(&self) -> Result<(), mpsc::SendError<()>> {
+    pub fn stop(&self) -> Result<(), mpsc::SendError<Control>> {
         if let Some(c) = self.control_chan.as_ref() {
-            c.send(())?
+            c.send(Control::Stop)?
         };
         Ok(())
     }
@@ -209,6 +237,7 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
             task,
             resources.clone(),
             self.poll_interval,
+            self.control_chan.clone(),
         )
     }
 
@@ -231,13 +260,13 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
 
 /// Scheduler will be terminated when `SchedulerHandle` is dropped.
 pub struct SchedulerHandle {
-    control_chan: mpsc::Sender<()>,
+    control_chan: Arc<Mutex<mpsc::Sender<Control>>>,
     handle: thread::JoinHandle<()>,
 }
 
 impl Drop for SchedulerHandle {
     fn drop(&mut self) {
-        self.control_chan.send(());
+        self.control_chan.lock().unwrap().send(Control::Stop);
     }
 }
 
@@ -278,6 +307,7 @@ impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
         task: Task<R>,
         resources: Vec<R>,
         poll_interval: Duration,
+        control_chan: Option<mpsc::Sender<Control>>,
     ) -> Result<(), Error> {
         self.own_tasks.insert(task_ident.clone(), Mutex::new(task));
 
@@ -287,29 +317,33 @@ impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
             create_dir_all(&dir)?;
         }
 
-        // Ensure task ident's entry exists.
-        // NOTE/TODO: It shouldn't already exist, so it is should be safe to just create it.
         self.task_files
-            .entry(task_ident.clone())
-            .or_insert(Default::default());
+            .insert(task_ident.clone(), Default::default());
 
         for resource in resources.iter() {
-            if self.assigned_tasks.get(&task_ident).is_some() {
-                // If the task has been assigned to a resource already (having been scheduled here on an earlier iteration)
-                // then no further enqueueing is required.
-                break;
+            if let Some(task) = self.own_tasks.get(&task_ident) {
+                {
+                    let _task_lock = task.lock().unwrap();
+                    if self.assigned_tasks.get(&task_ident).is_some() {
+                        // If the task has been assigned to a resource already (having been scheduled here on an earlier
+                        // iteration) then no further enqueueing is required.
+                        break;
+                    }
+                    let dir = self.root.join(resource.dir_id());
+                    let task_file = task_ident.enqueue_in_dir(&dir)?;
+                    self.task_files.entry(task_ident.clone()).and_modify(|e| {
+                        e.insert(task_file);
+                    });
+                }
+
+                // Give the just-enqueued task time to be assigned to a resource – so a less-preferred resource is not
+                // assigned if a more-preferred resource is available. Don't wait until after releasing the task lock.
+                // Otherwise the main scheduler loop won't be able to work.
+                thread::sleep(poll_interval);
             }
-            let dir = self.root.join(resource.dir_id());
-            let task_file = task_ident.enqueue_in_dir(&dir)?;
-
-            self.task_files.entry(task_ident.clone()).and_modify(|e| {
-                e.insert(task_file);
-            });
-
-            thread::sleep(poll_interval);
         }
-        // Task assignment is only tracked to prevent post-assignment enqueuing.
-        // so no more tracking is required for this task, now that enqueueing is complete.
+        // Task assignment is only tracked to prevent post-assignment enqueuing, so no more tracking is required for
+        // this task, now that enqueueing is complete.
         self.assigned_tasks.remove(&task_ident);
 
         Ok(())
@@ -381,7 +415,10 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
         };
     }
 
-    fn handle_next(&mut self) -> Result<(), Error> {
+    fn handle_next(
+        &mut self,
+        control_chan: Arc<Mutex<mpsc::Sender<Control>>>,
+    ) -> Result<(), Error> {
         assert!(self.dir.is_dir(), "scheduler dir is not a directory.");
 
         // If resource is locked, there is nothing to do now.
@@ -404,7 +441,11 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
 
         if is_own {
             // Task is owned by this process.
-            self.handle_own(&ident, &mut self.root_scheduler.lock().unwrap());
+            self.handle_own(
+                &ident,
+                &mut self.root_scheduler.lock().unwrap(),
+                control_chan,
+            );
         } else {
             if !locked {
                 // The next-up task is unlocked, so it can be destroyed —
@@ -420,47 +461,35 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
     fn handle_own(
         &self,
         ident: &TaskIdent,
+        // `root_scheduler` is `self.root_scheduler` — with the lock held.
         root_scheduler: &mut SchedulerRoot<R>,
+        control_chan: Arc<Mutex<mpsc::Sender<Control>>>,
     ) -> Result<(), Error> {
         let mut assigned_task = false;
         {
             // Lock the task so a sibling won't remove it.
-            let guard_result = root_scheduler
+            let task_guard = root_scheduler
                 .own_tasks
-                .get(&ident)
+                .get_mut(&ident)
                 .expect("own task missing")
                 .try_lock();
 
-            if let Ok(guard) = guard_result {
-                let task = guard;
-
+            if let Ok(task) = task_guard {
                 // We have the lock for this task, so we may destroy the sibling TaskFiles.
                 if let Some(all_task_files) = root_scheduler.task_files.get(&ident) {
-                    // FIXME: unwrap
                     all_task_files.iter().for_each(|task_file| {
                         // Don't destroy this directory's task file until we are done performing the task
                         if !task_file.path.starts_with(self.dir.clone()) {
-                            // We already hold the lock for all of our task files, so this is okay.
-                            task_file.destroy().unwrap();
-                            // TODO: check that destroy fails gracefully if already gone.
+                            task_file.destroy();
                         };
                     });
                 }
 
                 root_scheduler.assigned_tasks.insert(ident.clone());
-                self.perform_task(&*task)?;
+                self.perform_task(&*task, control_chan, ident, self.dir.clone())?;
                 // NOTE: We must defer removing from `self.own_tasks` because the map is borrowed in this scope above.
-                assigned_task = true;
 
-                // Task has been assigned, destroy all task files.
-                // FIXME: Actually, *this* task file should not be destroyed until task completes.
-                // That ensures we know which task is running on a locked resource.
-                // Destroying it now should not lead to correctness problems apart from the bookkeeping noted above.
-                if let Some(all_task_files) = root_scheduler.task_files.get(&ident) {
-                    all_task_files.iter().for_each(|task_file| {
-                        task_file.destroy();
-                    });
-                }
+                assigned_task = true;
             };
 
             // lock is dropped here
@@ -468,13 +497,24 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
 
         if assigned_task {
             // Now we can remove (see NOTE above).
+
+            // Remove from own_tasks even though task may not yet have completed. Otherwise it will be handled and
+            // performed again. This means that currently-running tasks are handled as though they are owned by other
+            // processes after the first time (when they are assigned to resources). However, they will not be removed,
+            // since the file itself is locked.
             root_scheduler.own_tasks.remove(&ident);
         }
 
         Ok(())
     }
 
-    fn perform_task(&self, task: &Task<R>) -> Result<(), Error> {
+    fn perform_task(
+        &self,
+        task: &Task<R>,
+        control_chan: Arc<Mutex<mpsc::Sender<Control>>>,
+        ident: &TaskIdent,
+        dir: PathBuf,
+    ) -> Result<(), Error> {
         let lock = self.lock()?;
 
         let preemption_checker = PreemptionChecker {
@@ -483,9 +523,14 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
 
         let resource = self.resource.clone();
         let executable = Arc::clone(task);
+        let ident = ident.clone();
         thread::spawn(move || {
             let _captured_lock = lock;
             (executable)(&resource, &preemption_checker);
+            control_chan
+                .lock()
+                .unwrap()
+                .send(Control::Finished(dir, ident));
 
             // Lock is dropped, and therefore released here, at end of scope after task has been performed.
         });

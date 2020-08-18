@@ -9,7 +9,7 @@ use super::task_file::TaskFile;
 use super::{Priority, PROCESS_ID};
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub(crate) struct TaskIdent {
+pub struct TaskIdent {
     pub(crate) priority: Priority,
     pub(crate) name: String,
     id: usize,
@@ -48,21 +48,24 @@ impl TaskIdent {
     }
     pub(crate) fn try_destroy(&self, dir: &PathBuf) -> Result<(), Error> {
         let path = self.path(dir);
-        let file = File::open(path.clone())?;
-        if file.try_lock_exclusive().is_err() {
-            debug!(
-                "Not removing TaskFile from queue {:?}: {}",
-                dir,
-                self.to_string()
-            );
-        } else {
-            remove_file(path)?;
-            debug!(
-                "Removing TaskFile from queue {:?}: {}",
-                dir,
-                self.to_string()
-            );
-        };
+        let mut destroyed = false;
+        if path.exists() {
+            let file = File::open(path.clone())?;
+            if file.try_lock_exclusive().is_err() {
+                debug!(
+                    "Not removing TaskFile from queue {:?}: {}",
+                    dir,
+                    self.to_string()
+                );
+            } else {
+                remove_file(path)?;
+                debug!(
+                    "Removing TaskFile from queue {:?}: {}",
+                    dir,
+                    self.to_string()
+                );
+            };
+        }
         Ok(())
     }
 }

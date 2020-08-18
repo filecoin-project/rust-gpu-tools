@@ -42,7 +42,9 @@ impl TaskFile {
     }
 
     pub(crate) fn destroy(&self) -> Result<(), Error> {
-        remove_file(self.path.clone())?;
+        if self.path.exists() {
+            remove_file(self.path.clone())?;
+        }
         Ok(())
     }
 }
