@@ -502,6 +502,7 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
             // performed again. This means that currently-running tasks are handled as though they are owned by other
             // processes after the first time (when they are assigned to resources). However, they will not be removed,
             // since the file itself is locked.
+            // WARN: It already is removed! Keeping this for the sake of keeping the diff clean, to make it easier for review
             root_scheduler.own_tasks.remove(&ident);
         }
 
