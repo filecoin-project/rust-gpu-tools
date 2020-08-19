@@ -232,13 +232,35 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
             .lock()
             .unwrap()
             .new_ident(priority, name);
-        self.scheduler_root.lock().unwrap().schedule(
-            task_ident,
-            task,
-            resources.clone(),
-            self.poll_interval,
-            self.control_chan.clone(),
-        )
+
+        self.scheduler_root
+            .lock()
+            .unwrap()
+            .start_scheduling(task_ident.clone(), task);
+
+        for resource in resources.iter() {
+            if self
+                .scheduler_root
+                .lock()
+                .unwrap()
+                .enqueue_task_for_resource(&task_ident, resource)?
+            {
+                break;
+            };
+
+            // Give the just-enqueued task time to be assigned to a resource – so a less-preferred resource is not
+            // assigned if a more-preferred resource is available. Note that we are not holding a lock on
+            // `self.scheduler_root`, so the scheduler loop will have an opportunity to work, if possible.
+
+            thread::sleep(self.poll_interval);
+        }
+
+        self.scheduler_root
+            .lock()
+            .unwrap()
+            .finish_scheduling(task_ident);
+
+        Ok(())
     }
 
     /// `cleanup` performs any (currently none) cleanup required when a scheduler terminates.
@@ -276,7 +298,7 @@ struct SchedulerRoot<R: Resource + 'static> {
     /// one per `Resource` for which it is currently scheduled (but only one `Resource` will eventually be assigned).
     task_files: HashMap<TaskIdent, HashSet<TaskFile>>,
     /// Each `Task` (identified uniquely by a `TaskIdent`) is protected by a `Mutex`.
-    own_tasks: HashMap<TaskIdent, Mutex<Task<R>>>,
+    own_tasks: HashMap<TaskIdent, Task<R>>,
     /// `TaskIdent`s are added to `assigned_tasks` when they have been assigned to a resource and are being performed.
     /// Once this happens, they must not be enqueued on another resource, since that might lead to double assignment.
     assigned_tasks: HashSet<TaskIdent>,
@@ -296,57 +318,45 @@ impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
             ident_counter: 0,
         })
     }
+
     fn new_ident(&mut self, priority: Priority, name: &str) -> TaskIdent {
         let id = self.ident_counter;
         self.ident_counter += 1;
         TaskIdent::new(priority, name, id)
     }
-    fn schedule(
+
+    fn start_scheduling(&mut self, task_ident: TaskIdent, task: Task<R>) {
+        self.own_tasks.insert(task_ident.clone(), task);
+    }
+
+    // Returns true if task has already been assigned.
+    fn enqueue_task_for_resource(
         &mut self,
-        task_ident: TaskIdent,
-        task: Task<R>,
-        resources: Vec<R>,
-        poll_interval: Duration,
-        control_chan: Option<mpsc::Sender<Control>>,
-    ) -> Result<(), Error> {
-        self.own_tasks.insert(task_ident.clone(), Mutex::new(task));
-
-        // Create all resource dirs, if necessary (even if task is performed before enqueuing on all of them).
-        for resource in resources.iter() {
-            let dir = self.root.join(resource.dir_id());
-            create_dir_all(&dir)?;
-        }
-
-        self.task_files
-            .insert(task_ident.clone(), Default::default());
-
-        for resource in resources.iter() {
-            if let Some(task) = self.own_tasks.get(&task_ident) {
-                {
-                    let _task_lock = task.lock().unwrap();
-                    if self.assigned_tasks.get(&task_ident).is_some() {
-                        // If the task has been assigned to a resource already (having been scheduled here on an earlier
-                        // iteration) then no further enqueueing is required.
-                        break;
-                    }
-                    let dir = self.root.join(resource.dir_id());
-                    let task_file = task_ident.enqueue_in_dir(&dir)?;
-                    self.task_files.entry(task_ident.clone()).and_modify(|e| {
-                        e.insert(task_file);
-                    });
+        task_ident: &TaskIdent,
+        resource: &R,
+    ) -> Result<bool, Error> {
+        if let Some(task) = self.own_tasks.get(&task_ident) {
+            {
+                if self.assigned_tasks.get(&task_ident).is_some() {
+                    // If the task has been assigned to a resource already (having been scheduled here on an earlier
+                    // iteration) then no further enqueueing is required.
+                    return Ok(true);
                 }
+                let dir = self.root.join(resource.dir_id());
+                create_dir_all(&dir)?;
+                let task_file = task_ident.enqueue_in_dir(&dir)?;
 
-                // Give the just-enqueued task time to be assigned to a resource – so a less-preferred resource is not
-                // assigned if a more-preferred resource is available. Don't wait until after releasing the task lock.
-                // Otherwise the main scheduler loop won't be able to work.
-                thread::sleep(poll_interval);
+                self.task_files
+                    .entry(task_ident.clone())
+                    .or_insert_with(|| Default::default())
+                    .insert(task_file);
             }
         }
-        // Task assignment is only tracked to prevent post-assignment enqueuing, so no more tracking is required for
-        // this task, now that enqueueing is complete.
-        self.assigned_tasks.remove(&task_ident);
+        Ok(false)
+    }
 
-        Ok(())
+    fn finish_scheduling(&mut self, task_ident: TaskIdent) {
+        self.assigned_tasks.remove(&task_ident);
     }
 }
 
@@ -464,49 +474,22 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
         // `root_scheduler` is `self.root_scheduler` — with the lock held.
         root_scheduler: &mut SchedulerRoot<R>,
         control_chan: Arc<Mutex<mpsc::Sender<Control>>>,
-    ) -> Result<(), Error> {
-        let mut assigned_task = false;
-        {
-            // Lock the task so a sibling won't remove it.
-            let task_guard = root_scheduler
-                .own_tasks
-                .remove(&ident)
-                .expect("own task missing")
-                .into_inner();
+    ) {
+        let task = root_scheduler
+            .own_tasks
+            .remove(&ident)
+            .expect("own task missing");
 
-            if let Ok(task) = task_guard {
-                // We have the lock for this task, so we may destroy the sibling TaskFiles.
-                if let Some(all_task_files) = root_scheduler.task_files.get(&ident) {
-                    all_task_files.iter().for_each(|task_file| {
-                        // Don't destroy this directory's task file until we are done performing the task
-                        if !task_file.path.starts_with(self.dir.clone()) {
-                            task_file.destroy();
-                        };
-                    });
-                }
-
-                root_scheduler.assigned_tasks.insert(ident.clone());
-                self.perform_task(task, control_chan, ident, self.dir.clone())?;
-                // NOTE: We must defer removing from `self.own_tasks` because the map is borrowed in this scope above.
-
-                assigned_task = true;
-            };
-
-            // lock is dropped here
+        if let Some(all_task_files) = root_scheduler.task_files.get(&ident) {
+            all_task_files.iter().for_each(|task_file| {
+                // Don't destroy this directory's task file until we are done performing the task
+                if !task_file.path.starts_with(self.dir.clone()) {
+                    task_file.destroy();
+                };
+            });
         }
-
-        if assigned_task {
-            // Now we can remove (see NOTE above).
-
-            // Remove from own_tasks even though task may not yet have completed. Otherwise it will be handled and
-            // performed again. This means that currently-running tasks are handled as though they are owned by other
-            // processes after the first time (when they are assigned to resources). However, they will not be removed,
-            // since the file itself is locked.
-            // WARN: It already is removed! Keeping this for the sake of keeping the diff clean, to make it easier for review
-            root_scheduler.own_tasks.remove(&ident);
-        }
-
-        Ok(())
+        root_scheduler.assigned_tasks.insert(ident.clone());
+        self.perform_task(task, control_chan, ident, self.dir.clone());
     }
 
     fn perform_task(
@@ -515,8 +498,8 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
         control_chan: Arc<Mutex<mpsc::Sender<Control>>>,
         ident: &TaskIdent,
         dir: PathBuf,
-    ) -> Result<(), Error> {
-        let lock = self.lock()?;
+    ) {
+        let lock = self.lock().unwrap();
 
         let preemption_checker = PreemptionChecker {
             dir: self.dir.clone(),
@@ -531,11 +514,8 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
                 .lock()
                 .unwrap()
                 .send(Control::Finished(dir, ident));
-
             // Lock is dropped, and therefore released here, at end of scope after task has been performed.
         });
-
-        Ok(())
     }
 }
 
