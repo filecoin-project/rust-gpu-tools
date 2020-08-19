@@ -323,6 +323,7 @@ impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
         for resource in resources.iter() {
             if let Some(task) = self.own_tasks.get(&task_ident) {
                 {
+                    let _task_lock = task.lock().unwrap();
                     if self.assigned_tasks.get(&task_ident).is_some() {
                         // If the task has been assigned to a resource already (having been scheduled here on an earlier
                         // iteration) then no further enqueueing is required.
