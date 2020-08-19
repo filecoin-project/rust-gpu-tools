@@ -276,7 +276,7 @@ struct SchedulerRoot<R: Resource + 'static> {
     /// one per `Resource` for which it is currently scheduled (but only one `Resource` will eventually be assigned).
     task_files: HashMap<TaskIdent, HashSet<TaskFile>>,
     /// Each `Task` (identified uniquely by a `TaskIdent`) is protected by a `Mutex`.
-    own_tasks: HashMap<TaskIdent, Task<R>>,
+    own_tasks: HashMap<TaskIdent, Mutex<Task<R>>>,
     /// `TaskIdent`s are added to `assigned_tasks` when they have been assigned to a resource and are being performed.
     /// Once this happens, they must not be enqueued on another resource, since that might lead to double assignment.
     assigned_tasks: HashSet<TaskIdent>,
@@ -309,7 +309,7 @@ impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
         poll_interval: Duration,
         control_chan: Option<mpsc::Sender<Control>>,
     ) -> Result<(), Error> {
-        self.own_tasks.insert(task_ident.clone(), task);
+        self.own_tasks.insert(task_ident.clone(), Mutex::new(task));
 
         // Create all resource dirs, if necessary (even if task is performed before enqueuing on all of them).
         for resource in resources.iter() {
@@ -464,35 +464,44 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
         root_scheduler: &mut SchedulerRoot<R>,
         control_chan: Arc<Mutex<mpsc::Sender<Control>>>,
     ) -> Result<(), Error> {
-        let task = root_scheduler
-            .own_tasks
-            .remove(&ident)
-            .expect("own task missing");
+        let mut assigned_task = false;
+        {
+            // Lock the task so a sibling won't remove it.
+            let task_guard = root_scheduler
+                .own_tasks
+                .remove(&ident)
+                .expect("own task missing")
+                .into_inner();
 
-        // We have the lock for this task, so we may destroy the sibling TaskFiles.
-        if let Some(all_task_files) = root_scheduler.task_files.get(&ident) {
-            // FIXME: unwrap
-            all_task_files.iter().for_each(|task_file| {
-                // Don't destroy this directory's task file until we are done performing the task
-                if !task_file.path.starts_with(self.dir.clone()) {
-                    // We already hold the lock for all of our task files, so this is okay.
-                    task_file.destroy().unwrap();
-                    // TODO: check that destroy fails gracefully if already gone.
-                };
-            });
+            if let Ok(task) = task_guard {
+                // We have the lock for this task, so we may destroy the sibling TaskFiles.
+                if let Some(all_task_files) = root_scheduler.task_files.get(&ident) {
+                    all_task_files.iter().for_each(|task_file| {
+                        // Don't destroy this directory's task file until we are done performing the task
+                        if !task_file.path.starts_with(self.dir.clone()) {
+                            task_file.destroy();
+                        };
+                    });
+                }
+
+                root_scheduler.assigned_tasks.insert(ident.clone());
+                self.perform_task(task, control_chan, ident, self.dir.clone())?;
+                // NOTE: We must defer removing from `self.own_tasks` because the map is borrowed in this scope above.
+
+                assigned_task = true;
+            };
+
+            // lock is dropped here
         }
 
-        root_scheduler.assigned_tasks.insert(ident.clone());
-        self.perform_task(task, control_chan, ident, self.dir.clone())?;
+        if assigned_task {
+            // Now we can remove (see NOTE above).
 
-        // Task has been assigned, destroy all task files.
-        // FIXME: Actually, *this* task file should not be destroyed until task completes.
-        // That ensures we know which task is running on a locked resource.
-        // Destroying it now should not lead to correctness problems apart from the bookkeeping noted above.
-        if let Some(all_task_files) = root_scheduler.task_files.get(&ident) {
-            all_task_files.iter().for_each(|task_file| {
-                task_file.destroy();
-            });
+            // Remove from own_tasks even though task may not yet have completed. Otherwise it will be handled and
+            // performed again. This means that currently-running tasks are handled as though they are owned by other
+            // processes after the first time (when they are assigned to resources). However, they will not be removed,
+            // since the file itself is locked.
+            root_scheduler.own_tasks.remove(&ident);
         }
 
         Ok(())
