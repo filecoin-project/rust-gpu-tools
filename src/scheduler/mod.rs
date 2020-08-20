@@ -602,7 +602,6 @@ mod test {
                 },
             );
         }
-        thread::sleep(Duration::from_millis(100));
 
         for id in 0..tasks1_len {
             // This example is like the previous, except that we sleep for twice the length of the poll interval
@@ -620,7 +619,6 @@ mod test {
                 },
             );
         }
-        thread::sleep(Duration::from_millis(100));
 
         for id in 0..tasks1_len {
             // In this example, tasks are added quickly and with priority matching id.
@@ -636,8 +634,6 @@ mod test {
                 },
             );
         }
-
-        thread::sleep(Duration::from_millis(100));
 
         let tasks2_len = 5;
         let mut out_rxs = Vec::with_capacity(tasks2_len);
@@ -669,8 +665,6 @@ mod test {
             let result = rx.recv().unwrap();
             (*RESULT_STATE).lock().unwrap().push(result);
         }
-
-        thread::sleep(Duration::from_millis(100));
 
         scheduler.lock().unwrap().stop();
 
