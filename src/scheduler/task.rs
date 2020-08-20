@@ -17,4 +17,4 @@ impl<'a, R: Resource> Preemption<R> for ResourceScheduler<R> {
     }
 }
 
-pub type Task<R: Resource + 'static> = Arc<Box<dyn Fn(&R, &dyn Preemption<R>) -> () + Sync + Send>>;
+pub type Task<R: Resource + 'static> = Box<dyn FnOnce(&R, &dyn Preemption<R>) -> () + Sync + Send>;
