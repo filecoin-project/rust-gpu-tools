@@ -356,6 +356,10 @@ impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
     }
 
     fn finish_scheduling(&mut self, task_ident: TaskIdent) {
+        // `assigned_tasks` is only used during the scheduling of a task, to prevent a task from being enqueued on more
+        // resources once it has been assigned. If we did not track this, the task might be double scheduled — since its
+        // `TaskFile` is only removed from sibling resource queues when it is first assigned. We can therefore remove
+        // this tracking once we are done scheduling the task, even though it may not yet have been performed.
         self.assigned_tasks.remove(&task_ident);
     }
 }
