@@ -109,7 +109,6 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
                         scheduler.lock().map(|scheduler| {
                             scheduler.scheduler_root.lock().map(|mut scheduler_root| {
                                 scheduler_root.own_tasks.remove(&task_ident);
-                                scheduler_root.assigned_tasks.remove(&task_ident);
                                 scheduler_root
                                     .task_files
                                     .remove(&task_ident)
@@ -238,7 +237,7 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
             .lock()
             .unwrap()
             .own_tasks
-            .insert(task_ident.clone(), task);
+            .insert(task_ident.clone(), Assignment::Unassigned(task));
 
         for resource in resources.iter() {
             let resource_dir = self.ensure_resource_scheduler(resource.clone());
@@ -256,19 +255,16 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
                 .unwrap()
                 .enqueue_task_for_resource(
                     &task_ident,
-                    resource,
                     task_ident.has_priority_to_preempt(),
                     resource_scheduler,
                 )?
             {
-                break;
+                // Give the just-enqueued task time to be assigned to a resource – so a less-preferred resource is not
+                // assigned if a more-preferred resource is available. Note that we are not holding a lock on
+                // `self.scheduler_root`, so the scheduler loop will have an opportunity to work, if possible.
+
+                thread::sleep(self.poll_interval);
             }
-
-            // Give the just-enqueued task time to be assigned to a resource – so a less-preferred resource is not
-            // assigned if a more-preferred resource is available. Note that we are not holding a lock on
-            // `self.scheduler_root`, so the scheduler loop will have an opportunity to work, if possible.
-
-            thread::sleep(self.poll_interval);
         }
 
         Ok(())
@@ -305,16 +301,17 @@ impl Drop for SchedulerHandle {
     }
 }
 
+enum Assignment<R> {
+    Unassigned(Task<R>),
+    Assigned(R),
+}
+
 struct SchedulerRoot<R: Resource + 'static> {
     root: PathBuf,
     /// A given `Task` (identified uniquely by a `TaskIdent`) may have multiple `TaskFile`s associated,
     /// one per `Resource` for which it is currently scheduled (but only one `Resource` will eventually be assigned).
     task_files: HashMap<TaskIdent, HashSet<TaskFile>>,
-    /// Each `Task` (identified uniquely by a `TaskIdent`) is protected by a `Mutex`.
-    own_tasks: HashMap<TaskIdent, Task<R>>,
-    /// `TaskIdent`s are added to `assigned_tasks` when they have been assigned to a resource and are being performed.
-    /// Once this happens, they must not be enqueued on another resource, since that might lead to double assignment.
-    assigned_tasks: HashSet<TaskIdent>,
+    own_tasks: HashMap<TaskIdent, Assignment<R>>,
     ident_counter: usize,
 }
 
@@ -327,7 +324,6 @@ impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
             root,
             task_files: Default::default(),
             own_tasks: Default::default(),
-            assigned_tasks: Default::default(),
             ident_counter: 0,
         })
     }
@@ -338,31 +334,32 @@ impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
         TaskIdent::new(priority, name, id)
     }
 
-    // Returns true if task has already been assigned.
+    // Returns true if task was enqueued by this call.
     fn enqueue_task_for_resource(
         &mut self,
         task_ident: &TaskIdent,
-        resource: &R,
         preempt: bool,
         resource_scheduler: &mut ResourceScheduler<R>,
     ) -> Result<bool, Error> {
-        if self.assigned_tasks.get(&task_ident).is_some() {
-            // If the task has been assigned to a resource already (having been scheduled here on an earlier
-            // iteration) then no further enqueueing is required.
-            return Ok(true);
+        match self.own_tasks.get(&task_ident) {
+            // This isn't our own task. Do nothing and report that.
+            None => Ok(false),
+            // If the task has been assigned to a resource already, then no further enqueueing is required.
+            Some(Assignment::Assigned(_)) => Ok(false),
+            Some(Assignment::Unassigned(_)) => {
+                if preempt {
+                    resource_scheduler.maybe_preempt_with(task_ident);
+                }
+
+                let task_file = resource_scheduler.enqueue_task(&task_ident)?;
+                self.task_files
+                    .entry(task_ident.clone())
+                    .or_insert_with(Default::default)
+                    .insert(task_file);
+
+                Ok(true)
+            }
         }
-
-        if preempt {
-            resource_scheduler.maybe_preempt_with(task_ident);
-        }
-
-        let task_file = resource_scheduler.enqueue_task(&task_ident)?;
-        self.task_files
-            .entry(task_ident.clone())
-            .or_insert_with(Default::default)
-            .insert(task_file);
-
-        Ok(false)
     }
 }
 
@@ -392,8 +389,8 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
         let mut guard = self.preempting.lock().unwrap();
 
         match &*guard {
-            // NOTE: `preemption_lock` will be moved out of `self`, dropped, and therefore released if currently held.
-            Some((task_ident, preemption_lock)) => *guard = None,
+            // NOTE: `_preemption_lock` will be moved out of `self`, dropped, and therefore released if currently held.
+            Some((_task_ident, _preemption_lock)) => *guard = None,
             None => (),
         };
 
@@ -522,21 +519,26 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
         root_scheduler: &mut SchedulerRoot<R>,
         control_chan: Arc<Mutex<mpsc::Sender<Control>>>,
     ) {
-        let task = root_scheduler
+        let assignment = root_scheduler
             .own_tasks
-            .remove(&ident)
+            .get_mut(&ident)
             .expect("own task missing");
 
-        if let Some(all_task_files) = root_scheduler.task_files.get(&ident) {
-            all_task_files.iter().for_each(|task_file| {
-                // Don't destroy this directory's task file until we are done performing the task
-                if !task_file.path.starts_with(self.dir.clone()) {
-                    task_file.destroy();
-                };
-            });
+        match std::mem::replace(assignment, Assignment::Assigned(self.resource.clone())) {
+            Assignment::Unassigned(task) => {
+                if let Some(all_task_files) = root_scheduler.task_files.get(&ident) {
+                    all_task_files.iter().for_each(|task_file| {
+                        // Don't destroy this directory's task file until we are done performing the task
+                        if !task_file.path.starts_with(self.dir.clone()) {
+                            task_file.destroy();
+                        };
+                    });
+                }
+                self.perform_task(task, control_chan, ident, self.dir.clone());
+            }
+            // If `task` is `None`, that means we own it, and it has already been assigned, so there is nothing to do now.
+            Assignment::Assigned(_) => (),
         }
-        root_scheduler.assigned_tasks.insert(ident.clone());
-        self.perform_task(task, control_chan, ident, self.dir.clone());
     }
 
     fn perform_task(
@@ -548,8 +550,7 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
     ) {
         let resource_lock = self.lock().unwrap();
         let task_is_preempting = match &*self.preempting.lock().unwrap() {
-            // NOTE: `preemption_lock` will be moved out of `self`, dropped, and therefore released if currently held.
-            Some((task_ident, preemption_lock)) => task_ident == ident,
+            Some((task_ident, _preemption_lock)) => task_ident == ident,
             None => false,
         };
 
@@ -563,7 +564,7 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
         thread::spawn(move || {
             {
                 let _captured_lock = resource_lock;
-                (task)(&resource, &preemption_checker);
+                task(&resource, &preemption_checker);
                 // Lock is dropped, and therefore released here, at end of scope after task has been performed.
             }
             control_chan
