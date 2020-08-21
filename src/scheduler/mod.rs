@@ -403,8 +403,10 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
         let mut guard = self.preempting.lock().unwrap();
 
         if guard.is_none() {
-            let lock = self.preempt_lock()?;
-            *guard = Some((task_ident.clone(), lock));
+            match self.try_preempt_lock()? {
+                Some(lock) => *guard = Some((task_ident.clone(), lock)),
+                None => (), // Another process holds the preemption lock.
+            }
             Ok(true)
         } else {
             Ok(false)
