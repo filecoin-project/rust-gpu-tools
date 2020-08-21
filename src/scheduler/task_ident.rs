@@ -13,16 +13,18 @@ pub struct TaskIdent {
     pub(crate) priority: Priority,
     pub(crate) name: String,
     id: usize,
+    is_preemptible: bool,
 }
 
 /// `TaskIdent`s must uniquely identify `Task`s, so must be created with
 /// `SchedulerRoot::new_ident` — which manages the id counter.
 impl TaskIdent {
-    pub(crate) fn new(priority: Priority, name: &str, id: usize) -> Self {
+    pub(crate) fn new(priority: Priority, name: &str, id: usize, is_preemptible: bool) -> Self {
         Self {
             priority,
             name: name.to_string(),
             id,
+            is_preemptible,
         }
     }
 
@@ -91,11 +93,12 @@ impl TaskIdent {
 impl ToString for TaskIdent {
     fn to_string(&self) -> String {
         format!(
-            "{priority}-{process}-{name}-{id}",
+            "{priority}-{process}-{name}-{id}-{preemptible}",
             priority = self.priority,
             process = *PROCESS_ID,
             name = self.name,
             id = self.id,
+            preemptible = if self.is_preemptible { "P" } else { "X" },
         )
     }
 }
@@ -116,9 +119,25 @@ impl FromStr for TaskIdent {
             return Err(Error::new(std::io::ErrorKind::InvalidInput, s));
         };
         let name = parts.get(2).unwrap_or(&"").to_string();
+        let is_preemptible = if let Some(p) = parts.get(4) {
+            if p == &"P" {
+                true
+            } else if p == &"X" {
+                false
+            } else {
+                return Err(Error::new(std::io::ErrorKind::InvalidInput, s));
+            }
+        } else {
+            return Err(Error::new(std::io::ErrorKind::InvalidInput, s));
+        };
         if let Some(id1) = parts.get(3).map(|s| s.parse().ok()) {
             if let Some(id) = id1 {
-                Ok(Self { priority, name, id })
+                Ok(Self {
+                    priority,
+                    name,
+                    id,
+                    is_preemptible,
+                })
             } else {
                 return Err(Error::new(std::io::ErrorKind::InvalidInput, s));
             }

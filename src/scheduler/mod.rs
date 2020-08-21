@@ -120,11 +120,12 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
                             });
                         });
                         scheduler.lock().map(|mut scheduler| {
-                            scheduler.resource_schedulers.get_mut(&dir).map(
-                                |mut resource_scheduler| {
+                            scheduler
+                                .resource_schedulers
+                                .get_mut(&dir)
+                                .map(|resource_scheduler| {
                                     resource_scheduler.dequeue_task(&task_ident)
-                                },
-                            );
+                                });
                         });
                     }
                     Err(_) => (),
@@ -146,6 +147,7 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
         name: &str,
         resources: &Vec<R>,
         task_function: F,
+        is_preemptible: bool,
     ) -> mpsc::Receiver<T>
     where
         F: FnOnce(&R) -> T + Sync + Send,
@@ -161,6 +163,7 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
                 (*tx_mutex.lock().unwrap()).send(result);
             }),
             resources,
+            is_preemptible,
         )
         .unwrap();
         rx
@@ -173,12 +176,13 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
         name: &str,
         resources: &Vec<R>,
         task_function: F,
+        is_preemptible: bool,
     ) -> Result<T, mpsc::RecvError>
     where
         F: FnOnce(&R) -> T + Sync + Send,
         T: Sync + Send,
     {
-        let rx = self.schedule(priority, name, resources, task_function);
+        let rx = self.schedule(priority, name, resources, task_function, is_preemptible);
 
         rx.recv()
     }
@@ -190,6 +194,7 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
         name: &str,
         resources: &Vec<R>,
         task_function: F,
+        is_preemptible: bool,
     ) -> futures::channel::oneshot::Receiver<T>
     where
         F: FnOnce(&R) -> T + Sync + Send,
@@ -208,6 +213,7 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
                 }
             }),
             resources,
+            is_preemptible,
         )
         .unwrap();
         rx
@@ -226,18 +232,23 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
         name: &str,
         task: Task<R>,
         resources: &Vec<R>,
+        is_preemptible: bool,
     ) -> Result<(), Error> {
-        let task_ident = self
-            .scheduler_root
-            .lock()
-            .unwrap()
-            .new_ident(priority, name);
+        let task_ident =
+            self.scheduler_root
+                .lock()
+                .unwrap()
+                .new_ident(priority, name, is_preemptible);
 
         self.scheduler_root
             .lock()
             .unwrap()
             .own_tasks
             .insert(task_ident.clone(), Assignment::Unassigned(task));
+
+        let mut preempt = task_ident.has_priority_to_preempt();
+        // If this task has preemption priority, we need to choose *one* resource on which to schedule preemption.
+        // This resource must not already have a preempting task assigned.
 
         for resource in resources.iter() {
             let resource_dir = self.ensure_resource_scheduler(resource.clone());
@@ -249,21 +260,29 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
                         resource_dir
                     ));
 
-            if self
+            let status = self
                 .scheduler_root
                 .lock()
                 .unwrap()
-                .enqueue_task_for_resource(
-                    &task_ident,
-                    task_ident.has_priority_to_preempt(),
-                    resource_scheduler,
-                )?
-            {
+                .enqueue_task_for_resource(&task_ident, preempt, resource_scheduler)?;
+
+            match status {
+                // Only try to preempt once. Preemption is assumed not to fail, and we do not want to disrupt more than
+                // one running task.
+                EnqueueStatus::EnqueuedWithPreemption => {
+                    preempt = false;
+                }
+                _ => (),
+            }
+
+            match status {
                 // Give the just-enqueued task time to be assigned to a resource – so a less-preferred resource is not
                 // assigned if a more-preferred resource is available. Note that we are not holding a lock on
                 // `self.scheduler_root`, so the scheduler loop will have an opportunity to work, if possible.
-
-                thread::sleep(self.poll_interval);
+                EnqueueStatus::Enqueued | EnqueueStatus::EnqueuedWithPreemption => {
+                    thread::sleep(self.poll_interval)
+                }
+                _ => (),
             }
         }
 
@@ -317,6 +336,12 @@ struct SchedulerRoot<R: Resource + 'static> {
 
 unsafe impl<'a, R: Resource> Send for SchedulerRoot<R> {}
 
+enum EnqueueStatus {
+    Enqueued,
+    EnqueuedWithPreemption,
+    NotEnqueued,
+}
+
 impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
     fn new(root: PathBuf) -> Result<Self, Error> {
         create_dir_all(&root)?;
@@ -328,10 +353,10 @@ impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
         })
     }
 
-    fn new_ident(&mut self, priority: Priority, name: &str) -> TaskIdent {
+    fn new_ident(&mut self, priority: Priority, name: &str, is_preemptible: bool) -> TaskIdent {
         let id = self.ident_counter;
         self.ident_counter += 1;
-        TaskIdent::new(priority, name, id)
+        TaskIdent::new(priority, name, id, is_preemptible)
     }
 
     // Returns true if task was enqueued by this call.
@@ -340,16 +365,22 @@ impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
         task_ident: &TaskIdent,
         preempt: bool,
         resource_scheduler: &mut ResourceScheduler<R>,
-    ) -> Result<bool, Error> {
+    ) -> Result<EnqueueStatus, Error> {
         match self.own_tasks.get(&task_ident) {
             // This isn't our own task. Do nothing and report that.
-            None => Ok(false),
+            None => Ok(EnqueueStatus::NotEnqueued),
             // If the task has been assigned to a resource already, then no further enqueueing is required.
-            Some(Assignment::Assigned(_)) => Ok(false),
+            Some(Assignment::Assigned(_)) => Ok(EnqueueStatus::NotEnqueued),
             Some(Assignment::Unassigned(_)) => {
-                if preempt {
-                    resource_scheduler.maybe_preempt_with(task_ident);
-                }
+                let preempting = preempt && resource_scheduler.maybe_preempt_with(task_ident)?;
+                // `preempting` is true if we successfully scheduled the task for preemption for this resource. In that
+                // case, we should not schedule it for preemption on another. We should, however, still schedule it
+                // without preemption on any remaining resources.
+                let status = if preempting {
+                    EnqueueStatus::EnqueuedWithPreemption
+                } else {
+                    EnqueueStatus::Enqueued
+                };
 
                 let task_file = resource_scheduler.enqueue_task(&task_ident)?;
                 self.task_files
@@ -357,7 +388,7 @@ impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
                     .or_insert_with(Default::default)
                     .insert(task_file);
 
-                Ok(true)
+                Ok(status)
             }
         }
     }
@@ -370,7 +401,7 @@ struct ResourceScheduler<R: Resource + 'static> {
     preempting: Mutex<Option<(TaskIdent, ResourceLock)>>,
 }
 
-impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
+impl<'a, R: Resource + Sync + Send + 'static> ResourceScheduler<R> {
     fn new(root_scheduler: Arc<Mutex<SchedulerRoot<R>>>, dir: PathBuf, resource: R) -> Self {
         create_dir_all(&dir);
         Self {
@@ -397,19 +428,25 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
         task_ident.destroy(&self.dir);
     }
 
-    /// Record `task_ident` and corresponding preemption — unless another task is actively preempting . Return true if
-    /// something was done.
+    /// Try to acquire the preemption lock and record the results.
+    /// Return true if the preemption lock was successfully acquired.
     fn maybe_preempt_with(&mut self, task_ident: &TaskIdent) -> Result<bool, Error> {
+        if !self.current_task_is_preemptible() {
+            return Ok(false);
+        }
+
         let mut guard = self.preempting.lock().unwrap();
 
         if guard.is_none() {
             match self.try_preempt_lock()? {
-                Some(lock) => *guard = Some((task_ident.clone(), lock)),
-                None => (), // Another process holds the preemption lock.
+                Some(lock) => {
+                    *guard = Some((task_ident.clone(), lock));
+                    Ok(true)
+                }
+                None => Ok(false), // Another process holds the preemption lock.
             }
-            Ok(true)
         } else {
-            Ok(false)
+            Ok(false) // Another of this process' own tasks is preempting.
         }
     }
 
@@ -429,7 +466,24 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
         ResourceLock::maybe_acquire(&self.dir, &self.resource, true)
     }
 
-    fn next_task_ident(dir: &PathBuf) -> Option<(TaskIdent, bool)> {
+    // Returns next-up `TaskIdent` and true if locked.
+    fn next_task_ident(&self) -> Option<(TaskIdent, bool)> {
+        Self::sorted_task_idents_and_locked_status(&self.dir)
+            .get(0)
+            .map(|x| x.clone())
+    }
+
+    fn current_task_is_preemptible(&self) -> bool {
+        Self::sorted_task_idents_and_locked_status(&self.dir)
+            .iter()
+            .filter(|(_, locked)| *locked)
+            .take(1)
+            .map(|x| x.1)
+            .last()
+            .unwrap_or(false)
+    }
+
+    fn sorted_task_idents_and_locked_status(dir: &PathBuf) -> Vec<(TaskIdent, bool)> {
         let mut ident_data = Vec::new();
         let _ = fs::read_dir(&dir)
             .unwrap()
@@ -464,11 +518,11 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
                 _ => priority_ordering,
             }
         });
-        if let Some((ident, _, locked)) = ident_data.get(0) {
-            return Some((ident.clone(), *locked));
-        } else {
-            return None;
-        };
+
+        ident_data
+            .iter()
+            .map(|(ident, _create_date, locked)| (ident.clone(), *locked))
+            .collect()
     }
 
     fn handle_next(
@@ -482,7 +536,7 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
             return Ok(());
         }
 
-        let (ident, locked) = match Self::next_task_ident(&self.dir) {
+        let (ident, locked) = match self.next_task_ident() {
             Some(res) => res,
             None => return Ok(()),
         };
@@ -530,6 +584,9 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
             Assignment::Unassigned(task) => {
                 if let Some(all_task_files) = root_scheduler.task_files.get(&ident) {
                     all_task_files.iter().for_each(|task_file| {
+                        // FIXME: If this task has priority zero, it may be scheduled for preemption on
+                        // other resources. We need to ensure only one resource is preempted.
+
                         // Don't destroy this directory's task file until we are done performing the task
                         if !task_file.path.starts_with(self.dir.clone()) {
                             task_file.destroy();
@@ -652,6 +709,7 @@ mod test {
                     (*RESULT_STATE).lock().unwrap().push(0);
                     thread::sleep(Duration::from_millis(100));
                 },
+                false,
             );
         }
 
@@ -671,6 +729,7 @@ mod test {
                 move |_| {
                     (*RESULT_STATE).lock().unwrap().push(id);
                 },
+                false,
             );
         }
         thread::sleep(Duration::from_millis(100));
@@ -689,6 +748,7 @@ mod test {
                 move |_| {
                     (*RESULT_STATE).lock().unwrap().push(id);
                 },
+                false,
             );
         }
         thread::sleep(Duration::from_millis(100));
@@ -705,6 +765,7 @@ mod test {
                 move |_| {
                     (*RESULT_STATE).lock().unwrap().push(id);
                 },
+                false,
             );
         }
 
@@ -733,6 +794,7 @@ mod test {
                     let result = input * input;
                     tx.lock().unwrap().send(result).unwrap();
                 },
+                false,
             );
         }
 
@@ -795,6 +857,7 @@ mod test {
                     };
                     thread::sleep(Duration::from_millis(100));
                 },
+                false,
             );
         }
 
@@ -827,7 +890,8 @@ mod test {
                     n - i,
                     &format!("task {}", i),
                     &resources,
-                    move |rsrc| i,
+                    move |_rsrc| i,
+                    false,
                 ))
             })
             .collect::<Vec<_>>();
