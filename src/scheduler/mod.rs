@@ -5,7 +5,6 @@ use ::lazy_static::lazy_static;
 
 use self::task_ident::TaskIdent;
 use fs2::FileExt;
-use futures::{future, Future};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use std::cmp::Ordering;
@@ -13,7 +12,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, create_dir_all, File};
 use std::io::Error;
 use std::iter;
-use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{mpsc, Arc, Mutex};
@@ -64,6 +62,7 @@ pub trait Resource: Clone {
 pub struct Scheduler<R: Resource + Send + Sync + 'static> {
     scheduler_root: Arc<Mutex<SchedulerRoot<R>>>,
     resource_schedulers: HashMap<PathBuf, ResourceScheduler<R>>,
+    root_dir: PathBuf,
     control_chan: Option<mpsc::Sender<Control>>,
     poll_interval: Duration,
 }
@@ -80,9 +79,12 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
 
     pub fn new_with_poll_interval(root: PathBuf, poll_interval: Duration) -> Result<Self, Error> {
         let scheduler = SchedulerRoot::new(root)?;
+        let scheduler_root = Arc::new(Mutex::new(scheduler));
+        let root_dir = scheduler_root.lock().unwrap().root.clone();
         Ok(Self {
-            scheduler_root: Arc::new(Mutex::new(scheduler)),
+            scheduler_root,
             resource_schedulers: Default::default(),
+            root_dir,
             control_chan: None,
             poll_interval,
         })
@@ -105,25 +107,28 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
                         break;
                     }
                     Ok(Control::Finished(dir, task_ident)) => {
-                        scheduler.try_lock().map(|scheduler| {
-                            scheduler
-                                .scheduler_root
-                                .try_lock()
-                                .map(|mut scheduler_root| {
+                        scheduler.lock().map(|mut scheduler| {
+                            if let Some(mut resource_scheduler) =
+                                scheduler.resource_schedulers.get_mut(&dir)
+                            {
+                                resource_scheduler.dequeue_task(&task_ident);
+                            };
+                        });
+                        scheduler.lock().map(|scheduler| {
+                            scheduler.scheduler_root.lock().map(|mut scheduler_root| {
+                                scheduler_root.task_files.remove(&task_ident);
+                                if let Some(_task_file) =
+                                    scheduler_root.task_files.get(&task_ident).map(|task_set| {
+                                        task_set
+                                            .iter()
+                                            .find(|t| (**t).path.starts_with(dir.clone()))
+                                    })
+                                {
+                                    scheduler_root.own_tasks.remove(&task_ident);
                                     scheduler_root.task_files.remove(&task_ident);
-                                    if let Some(task_file) =
-                                        scheduler_root.task_files.get(&task_ident).map(|task_set| {
-                                            task_set
-                                                .iter()
-                                                .find(|t| (**t).path.starts_with(dir.clone()))
-                                        })
-                                    {
-                                        task_ident.try_destroy(&dir);
-                                        scheduler_root.own_tasks.remove(&task_ident);
-                                        scheduler_root.task_files.remove(&task_ident);
-                                        scheduler_root.assigned_tasks.remove(&task_ident);
-                                    }
-                                });
+                                    scheduler_root.assigned_tasks.remove(&task_ident);
+                                }
+                            });
                         });
                     }
                     _ => (),
@@ -137,7 +142,8 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
         })
     }
 
-    /// Schedule `task_function` and return a `Receiver` for the result.
+    /// Schedule `task_function` and return a `Receiver` for the result. If priority is 0, scheduler will attempt to
+    /// preempt any tasks with higher priority on any of `resources`.
     pub fn schedule<F: 'static, T: 'static>(
         &mut self,
         priority: usize,
@@ -225,14 +231,16 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
         task: Task<R>,
         resources: &Vec<R>,
     ) -> Result<(), Error> {
-        resources.iter().for_each(|r| {
-            self.ensure_resource_scheduler(r.clone());
-        });
         let task_ident = self
             .scheduler_root
             .lock()
             .unwrap()
             .new_ident(priority, name);
+        let preempt = task_ident.has_priority_to_preempt();
+
+        resources.iter().for_each(|r| {
+            self.ensure_resource_scheduler(r.clone());
+        });
 
         self.scheduler_root
             .lock()
@@ -240,13 +248,18 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
             .start_scheduling(task_ident.clone(), task);
 
         for resource in resources.iter() {
-            if self
-                .scheduler_root
-                .lock()
-                .unwrap()
-                .enqueue_task_for_resource(&task_ident, resource)?
+            if let Some(resource_scheduler) = self
+                .resource_schedulers
+                .get_mut(&self.resource_dir(resource))
             {
-                break;
+                if self
+                    .scheduler_root
+                    .lock()
+                    .unwrap()
+                    .enqueue_task_for_resource(&task_ident, resource, preempt, resource_scheduler)?
+                {
+                    break;
+                }
             };
 
             // Give the just-enqueued task time to be assigned to a resource – so a less-preferred resource is not
@@ -263,16 +276,16 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
     fn cleanup(&self) {}
 
     fn ensure_resource_scheduler(&mut self, resource: R) {
-        let dir = self
-            .scheduler_root
-            .lock()
-            .unwrap()
-            .root
-            .join(resource.dir_id());
+        let dir = self.resource_dir(&resource);
+
         if !self.resource_schedulers.contains_key(&dir) {
             let rs = ResourceScheduler::new(self.scheduler_root.clone(), dir.clone(), resource);
             self.resource_schedulers.insert(dir, rs);
         }
+    }
+
+    fn resource_dir(&self, resource: &R) -> PathBuf {
+        self.root_dir.join(resource.dir_id())
     }
 }
 
@@ -330,23 +343,32 @@ impl<'a, R: Resource + Sync + Send> SchedulerRoot<R> {
         &mut self,
         task_ident: &TaskIdent,
         resource: &R,
+        preempt: bool,
+        resource_scheduler: &mut ResourceScheduler<R>,
     ) -> Result<bool, Error> {
-        if let Some(task) = self.own_tasks.get(&task_ident) {
+        if let Some(_task) = self.own_tasks.get(&task_ident) {
             {
                 if self.assigned_tasks.get(&task_ident).is_some() {
                     // If the task has been assigned to a resource already (having been scheduled here on an earlier
                     // iteration) then no further enqueueing is required.
                     return Ok(true);
                 }
-                let dir = self.root.join(resource.dir_id());
-                create_dir_all(&dir)?;
-                let task_file = task_ident.enqueue_in_dir(&dir)?;
+                let task_file = resource_scheduler.enqueue_task(&task_ident)?;
+
+                if preempt {
+                    resource_scheduler.maybe_preempt_with(task_ident);
+                }
 
                 self.task_files
                     .entry(task_ident.clone())
                     .or_insert_with(|| Default::default())
                     .insert(task_file);
             }
+        } else {
+            return Err(Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("No Task found for {:?}", task_ident),
+            ));
         }
         Ok(false)
     }
@@ -356,23 +378,63 @@ struct ResourceScheduler<R: Resource + 'static> {
     root_scheduler: Arc<Mutex<SchedulerRoot<R>>>,
     dir: PathBuf,
     resource: R,
+    preempting: Mutex<Option<(TaskIdent, ResourceLock)>>,
 }
 
 impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
     fn new(root_scheduler: Arc<Mutex<SchedulerRoot<R>>>, dir: PathBuf, resource: R) -> Self {
+        create_dir_all(&dir);
         Self {
             root_scheduler,
             dir,
             resource,
+            preempting: Mutex::new(None),
+        }
+    }
+
+    fn enqueue_task(&self, task_ident: &TaskIdent) -> Result<TaskFile, Error> {
+        task_ident.enqueue_in_dir(&self.dir)
+    }
+
+    fn dequeue_task(&mut self, task_ident: &TaskIdent) {
+        let mut guard = self.preempting.lock().unwrap();
+
+        match &*guard {
+            // NOTE: `preemption_lock` will be moved out of `self`, dropped, and therefore released if currently held.
+            Some((task_ident, preemption_lock)) => *guard = None,
+            None => (),
+        };
+
+        task_ident.try_destroy(&self.dir);
+    }
+
+    /// Set `self.preempting` to `task_ident` unless it is already set. Return true if it was set.
+    fn maybe_preempt_with(&mut self, task_ident: &TaskIdent) -> Result<bool, Error> {
+        let mut guard = self.preempting.lock().unwrap();
+
+        if guard.is_none() {
+            let lock = self.preempt_lock()?;
+            *guard = Some((task_ident.clone(), lock));
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 
     fn lock(&self) -> Result<ResourceLock, Error> {
-        ResourceLock::acquire(&self.dir, &self.resource)
+        ResourceLock::acquire(&self.dir, &self.resource, false)
     }
 
     fn try_lock(&self) -> Result<Option<ResourceLock>, Error> {
-        ResourceLock::maybe_acquire(&self.dir, &self.resource)
+        ResourceLock::maybe_acquire(&self.dir, &self.resource, false)
+    }
+
+    fn preempt_lock(&self) -> Result<ResourceLock, Error> {
+        ResourceLock::acquire(&self.dir, &self.resource, true)
+    }
+
+    fn try_preempt_lock(&self) -> Result<Option<ResourceLock>, Error> {
+        ResourceLock::maybe_acquire(&self.dir, &self.resource, true)
     }
 
     fn next_task_ident(dir: &PathBuf) -> Option<(TaskIdent, bool)> {
@@ -492,9 +554,15 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
         dir: PathBuf,
     ) {
         let lock = self.lock().unwrap();
+        let task_is_preempting = match &*self.preempting.lock().unwrap() {
+            // NOTE: `preemption_lock` will be moved out of `self`, dropped, and therefore released if currently held.
+            Some((task_ident, preemption_lock)) => task_ident == ident,
+            None => false,
+        };
 
         let preemption_checker = PreemptionChecker {
             dir: self.dir.clone(),
+            task_is_preempting,
         };
 
         let resource = self.resource.clone();
@@ -513,18 +581,23 @@ impl<'a, R: Resource + Sync + Send> ResourceScheduler<R> {
 
 struct PreemptionChecker {
     dir: PathBuf,
+    task_is_preempting: bool,
 }
 
 impl<R: Resource> Preemption<R> for PreemptionChecker {
-    fn should_preempt_now(&self, _task: &Task<R>) -> bool {
-        todo!();
+    fn should_preempt_now(&self) -> bool {
+        if self.task_is_preempting {
+            // A task should never preempt itself.
+            false
+        } else {
+            ResourceLock::is_held(&self.dir, true)
+        }
     }
 }
 
 mod test {
     use super::*;
     use crate::scheduler::futures::FutureExt;
-    use futures::Future;
 
     #[derive(Clone, Debug)]
     struct Rsrc {
@@ -569,8 +642,8 @@ mod test {
         let scheduler_handle = Scheduler::start(scheduler).expect("Failed to start scheduler.");
 
         for i in 0..num_resources {
-            /// Schedule a slow task to tie up all the resources
-            /// while the next batch of `Task1`s is scheduled.
+            // Schedule a slow task to tie up all the resources
+            // while the next batch of `Task1`s is scheduled.
             let priority = 0;
             expected.push(0);
             scheduler.lock().unwrap().schedule(
