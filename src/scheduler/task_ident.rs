@@ -46,9 +46,13 @@ impl TaskIdent {
             path: path.to_path_buf(),
         })
     }
+
+    pub(crate) fn has_priority_to_preempt(&self) -> bool {
+        self.priority == 0
+    }
+
     pub(crate) fn try_destroy(&self, dir: &PathBuf) -> Result<(), Error> {
         let path = self.path(dir);
-        let mut destroyed = false;
         if path.exists() {
             let file = File::open(path.clone())?;
             if file.try_lock_exclusive().is_err() {
@@ -65,6 +69,20 @@ impl TaskIdent {
                     self.to_string()
                 );
             };
+        }
+        Ok(())
+    }
+    pub(crate) fn destroy(&self, dir: &PathBuf) -> Result<(), Error> {
+        let path = self.path(dir);
+        if path.exists() {
+            let file = File::open(path.clone())?;
+            file.lock_exclusive()?;
+            remove_file(path)?;
+            debug!(
+                "Removing TaskFile from queue {:?}: {}",
+                dir,
+                self.to_string()
+            );
         }
         Ok(())
     }
