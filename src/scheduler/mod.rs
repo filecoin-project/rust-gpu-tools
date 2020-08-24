@@ -666,20 +666,26 @@ mod test {
     }
 
     const TEST_POLL_INTERVAL: Duration = Duration::from_millis(5);
-    lazy_static! {
-        static ref RESULT_STATE: Mutex<Vec<usize>> = Mutex::new(Vec::new());
-        static ref SCHEDULER: Mutex<Scheduler::<Rsrc>> = Mutex::new(
-            Scheduler::<Rsrc>::new_with_poll_interval(
-                tempfile::tempdir().unwrap().into_path(),
-                TEST_POLL_INTERVAL
-            )
-            .expect("Failed to create scheduler"),
-        );
+    macro_rules! new_scheduler {
+        ($name:ident) => {
+            lazy_static! {
+                static ref $name: Mutex<Scheduler::<Rsrc>> = Mutex::new(
+                    Scheduler::<Rsrc>::new_with_poll_interval(
+                        tempfile::tempdir().unwrap().into_path(),
+                        TEST_POLL_INTERVAL,
+                    )
+                    .expect("Failed to create scheduler"),
+                );
+            }
+        };
     }
 
+    new_scheduler!(SCHEDULER1);
     #[test]
     fn test_scheduler() {
-        let scheduler = &*SCHEDULER;
+        let scheduler = &*SCHEDULER1;
+        let handle = Scheduler::start(scheduler).unwrap();
+
         let root_dir = scheduler
             .lock()
             .unwrap()
@@ -689,32 +695,36 @@ mod test {
             .root
             .clone();
 
+        let result_state = Arc::new(Mutex::new(Vec::<usize>::new()));
         let num_resources = 3;
         let resources = (0..num_resources).map(|id| Rsrc { id }).collect::<Vec<_>>();
 
         let mut expected = Vec::new();
 
-        let scheduler_handle = Scheduler::start(scheduler).expect("Failed to start scheduler.");
-
+        let mut chans = Vec::new();
         for i in 0..num_resources {
+            let result_state = Arc::clone(&result_state);
             // Schedule a slow task to tie up all the resources
             // while the next batch of `Task1`s is scheduled.
             let priority = 0;
             expected.push(0);
-            scheduler.lock().unwrap().schedule(
+            chans.push(scheduler.lock().unwrap().schedule(
                 priority,
                 &format!("Task0[{}]", i),
                 &resources,
-                |r| {
-                    (*RESULT_STATE).lock().unwrap().push(0);
+                move |r| {
+                    result_state.lock().unwrap().push(0);
                     thread::sleep(Duration::from_millis(100));
                 },
                 false,
-            );
+            ));
         }
+        chans.into_iter().for_each(|ch| ch.recv().unwrap());
 
         let tasks1_len = 5;
+        let mut chans = Vec::new();
         for id in 0..tasks1_len {
+            let result_state = Arc::clone(&result_state);
             // When tasks are added very quickly (relative to the poll interval),
             // they should be performed in order of their priority.
             // In this group, we set priority to be the 'inverse' of task id.
@@ -722,58 +732,62 @@ mod test {
             // Therefore, we push the highest id onto `expected` first.
             let priority = tasks1_len - id - 1;
             expected.push(priority);
-            scheduler.lock().unwrap().schedule(
+            chans.push(scheduler.lock().unwrap().schedule(
                 priority,
                 &format!("Task1[{}]", id),
                 &resources,
                 move |_| {
-                    (*RESULT_STATE).lock().unwrap().push(id);
+                    result_state.lock().unwrap().push(id);
                 },
                 false,
-            );
+            ));
         }
-        thread::sleep(Duration::from_millis(100));
+        chans.into_iter().for_each(|ch| ch.recv().unwrap());
 
+        let mut chans = Vec::new();
         for id in 0..tasks1_len {
+            let result_state = Arc::clone(&result_state);
             // This example is like the previous, except that we sleep for twice the length of the poll interval
             // between each call to `schedule`. TODO: set the poll interval explicitly in the test.
             // Because each task is fully processed, they are performed in the order scheduled.
             let priority = tasks1_len - id - 1;
             expected.push(id);
             thread::sleep(Duration::from_millis(200));
-            scheduler.lock().unwrap().schedule(
+            chans.push(scheduler.lock().unwrap().schedule(
                 priority,
                 &format!("Task1[{}]", id),
                 &resources,
                 move |_| {
-                    (*RESULT_STATE).lock().unwrap().push(id);
+                    result_state.lock().unwrap().push(id);
                 },
                 false,
-            );
+            ));
         }
-        thread::sleep(Duration::from_millis(100));
+        chans.into_iter().for_each(|ch| ch.recv().unwrap());
 
+        let mut chans = Vec::new();
         for id in 0..tasks1_len {
+            let result_state = Arc::clone(&result_state);
             // In this example, tasks are added quickly and with priority matching id.
             // We therefore expect them to be performed in the order scheduled.
             // This case is somewhat trivial.
             expected.push(id);
-            scheduler.lock().unwrap().schedule(
+            chans.push(scheduler.lock().unwrap().schedule(
                 id,
                 &format!("Task1[{}]", id),
                 &resources,
                 move |_| {
-                    (*RESULT_STATE).lock().unwrap().push(id);
+                    result_state.lock().unwrap().push(id);
                 },
                 false,
-            );
+            ));
         }
-
-        thread::sleep(Duration::from_millis(100));
+        chans.into_iter().for_each(|ch| ch.recv().unwrap());
 
         let tasks2_len = 5;
         let mut out_rxs = Vec::with_capacity(tasks2_len);
         for i in 0..tasks2_len {
+            let result_state = Arc::clone(&result_state);
             // This example does not exercise the scheduler as such,
             // since results are harvested from the output channels
             // in the expected order (so scheduling does not come into play).
@@ -800,99 +814,84 @@ mod test {
 
         for rx in out_rxs.iter() {
             let result = rx.recv().unwrap();
-            (*RESULT_STATE).lock().unwrap().push(result);
+            result_state.lock().unwrap().push(result);
         }
-
-        thread::sleep(Duration::from_millis(100));
 
         scheduler.lock().unwrap().stop();
 
         let tasks1_len = 5;
         assert_eq!(
             num_resources + tasks1_len * 4,
-            RESULT_STATE.lock().unwrap().len()
+            result_state.lock().unwrap().len()
         );
 
-        assert_eq!(expected, *RESULT_STATE.lock().unwrap());
+        assert_eq!(expected, result_state.lock().unwrap().clone());
     }
 
-    lazy_static! {
-        static ref SCHEDULER2: Mutex<Scheduler::<Rsrc>> = Mutex::new(
-            Scheduler::<Rsrc>::new_with_poll_interval(
-                tempfile::tempdir().unwrap().into_path(),
-                TEST_POLL_INTERVAL
-            )
-            .expect("Failed to create scheduler"),
-        );
-        static ref GUARD_FAILURE: Mutex<bool> = Mutex::new(false);
-        static ref RESOURCES: Vec<Rsrc> = { (0..3).map(|id| Rsrc { id }).collect::<Vec<_>>() };
-        static ref RESOURCE_LOCKS: HashMap<String, Mutex<()>> = {
-            let mut map = HashMap::new();
-            for rsrc in RESOURCES.iter() {
-                map.insert(rsrc.name(), Mutex::new(()));
-            }
-            map
-        };
-    }
-
+    new_scheduler!(SCHEDULER2);
     #[test]
     fn test_guards() {
         let scheduler = &*SCHEDULER2;
-        let scheduler_handle = Scheduler::start(scheduler).expect("Failed to start scheduler.");
+        let handle = Scheduler::start(scheduler).unwrap();
 
+        let guard_failure = Arc::new(Mutex::new(false));
+
+        let resources = (0..3).map(|id| Rsrc { id }).collect::<Vec<_>>();
+        let resource_locks = Arc::new({
+            let mut map = HashMap::new();
+            for rsrc in resources.iter() {
+                map.insert(rsrc.name(), Mutex::new(()));
+            }
+            map
+        });
+
+        let mut chans = Vec::new();
         for id in 0..10 {
-            scheduler.lock().unwrap().schedule(
+            let resource_locks = Arc::clone(&resource_locks);
+            let guard_failure = Arc::clone(&guard_failure);
+            chans.push(scheduler.lock().unwrap().schedule(
                 0,
                 &format!("MyTask[{}]", id),
-                &*RESOURCES,
+                &resources,
                 move |r| {
-                    let mutex = &RESOURCE_LOCKS[&r.name()];
+                    let mutex = &resource_locks[&r.name()];
                     // No more than one task should be able to run on a single resource at a time!
                     let lock = match mutex.try_lock() {
                         Ok(lock) => lock,
                         Err(_) => {
-                            *GUARD_FAILURE.lock().unwrap() = true;
+                            *guard_failure.lock().unwrap() = true;
                             return;
                         }
                     };
                     thread::sleep(Duration::from_millis(100));
                 },
                 false,
-            );
+            ));
         }
+        chans.into_iter().for_each(|ch| ch.recv().unwrap());
 
-        thread::sleep(Duration::from_millis(100));
-
-        assert!(!*GUARD_FAILURE.lock().unwrap());
+        assert!(!*guard_failure.lock().unwrap());
     }
 
-    lazy_static! {
-        static ref SCHEDULER3: Mutex<Scheduler::<Rsrc>> = Mutex::new(
-            Scheduler::<Rsrc>::new_with_poll_interval(
-                tempfile::tempdir().unwrap().into_path(),
-                Duration::from_millis(1),
-            )
-            .expect("Failed to create scheduler"),
-        );
-    }
-
+    new_scheduler!(SCHEDULER3);
     #[test]
-
     fn test_schedule_fn() {
-        let scheduler_handle = Scheduler::start(&*SCHEDULER3).expect("Failed to start scheduler.");
+        let scheduler = &*SCHEDULER3;
+        let handle = Scheduler::start(scheduler).unwrap();
+
         thread::sleep(Duration::from_millis(300));
 
         let n = 10;
         let resources = (0..n).map(|id| Rsrc { id }).collect::<Vec<_>>();
         let mut futures = (0..n)
             .map(|i| {
-                Some((*SCHEDULER3).lock().unwrap().schedule_future(
+                scheduler.lock().unwrap().schedule_future(
                     n - i,
                     &format!("task {}", i),
                     &resources,
                     move |_rsrc| i,
                     false,
-                ))
+                )
             })
             .collect::<Vec<_>>();
 
@@ -904,11 +903,7 @@ mod test {
         thread::sleep(Duration::from_millis(100));
 
         for future in futures.iter_mut() {
-            if let Some(future) = future.take() {
-                if let Some(value) = future.now_or_never() {
-                    results.push(value.unwrap());
-                }
-            }
+            results.push(tokio_test::block_on(future).unwrap());
         }
 
         let mut expected = (0..n).collect::<Vec<_>>();
