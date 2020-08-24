@@ -27,6 +27,7 @@ impl std::hash::Hash for TaskFile {
 
 impl TaskFile {
     /// Destroy the underlying file if it can be locked immediately.
+    #[allow(dead_code)]
     pub(crate) fn try_destroy(&self) -> Result<(), Error> {
         let file = File::open(self.path.clone())?;
         if file.try_lock_exclusive().is_err() {

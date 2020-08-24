@@ -106,8 +106,8 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
                         break;
                     }
                     Ok(Control::Finished(dir, task_ident)) => {
-                        scheduler.lock().map(|scheduler| {
-                            scheduler.scheduler_root.lock().map(|mut scheduler_root| {
+                        let _ = scheduler.lock().map(|scheduler| {
+                            let _ = scheduler.scheduler_root.lock().map(|mut scheduler_root| {
                                 scheduler_root.own_tasks.remove(&task_ident);
                                 scheduler_root
                                     .task_files
@@ -119,7 +119,7 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
                                     });
                             });
                         });
-                        scheduler.lock().map(|mut scheduler| {
+                        let _ = scheduler.lock().map(|mut scheduler| {
                             scheduler
                                 .resource_schedulers
                                 .get_mut(&dir)
@@ -160,7 +160,7 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
             name,
             Box::new(move |r, _| {
                 let result = task_function(r);
-                (*tx_mutex.lock().unwrap()).send(result);
+                let _ = (*tx_mutex.lock().unwrap()).send(result);
             }),
             resources,
             is_preemptible,
@@ -209,7 +209,7 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
                 let result = task_function(r);
 
                 if let Some(tx) = tx_mutex.lock().unwrap().take() {
-                    tx.send(result);
+                    let _ = tx.send(result);
                 }
             }),
             resources,
@@ -251,7 +251,7 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
         // This resource must not already have a preempting task assigned.
 
         for resource in resources.iter() {
-            let resource_dir = self.ensure_resource_scheduler(resource.clone());
+            let resource_dir = self.ensure_resource_scheduler(resource.clone())?;
             let resource_scheduler =
                 self.resource_schedulers
                     .get_mut(&resource_dir)
@@ -292,15 +292,15 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
     /// `cleanup` performs any (currently none) cleanup required when a scheduler terminates.
     fn cleanup(&self) {}
 
-    fn ensure_resource_scheduler(&mut self, resource: R) -> PathBuf {
+    fn ensure_resource_scheduler(&mut self, resource: R) -> Result<PathBuf, Error> {
         let dir = self.resource_dir(&resource);
 
         if !self.resource_schedulers.contains_key(&dir) {
-            let rs = ResourceScheduler::new(self.scheduler_root.clone(), dir.clone(), resource);
+            let rs = ResourceScheduler::new(self.scheduler_root.clone(), dir.clone(), resource)?;
             self.resource_schedulers.insert(dir.clone(), rs);
         }
 
-        dir
+        Ok(dir)
     }
 
     fn resource_dir(&self, resource: &R) -> PathBuf {
@@ -311,12 +311,15 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
 /// Scheduler will be terminated when `SchedulerHandle` is dropped.
 pub struct SchedulerHandle {
     control_chan: Arc<Mutex<mpsc::Sender<Control>>>,
+    #[allow(dead_code)]
     handle: thread::JoinHandle<()>,
 }
 
 impl Drop for SchedulerHandle {
     fn drop(&mut self) {
-        self.control_chan.lock().unwrap().send(Control::Stop);
+        if let Err(e) = self.control_chan.lock().unwrap().send(Control::Stop) {
+            log::error!("Error on sending Stop signal to the scheduler loop: {}", e);
+        }
     }
 }
 
@@ -402,21 +405,25 @@ struct ResourceScheduler<R: Resource + 'static> {
 }
 
 impl<'a, R: Resource + Sync + Send + 'static> ResourceScheduler<R> {
-    fn new(root_scheduler: Arc<Mutex<SchedulerRoot<R>>>, dir: PathBuf, resource: R) -> Self {
-        create_dir_all(&dir);
-        Self {
+    fn new(
+        root_scheduler: Arc<Mutex<SchedulerRoot<R>>>,
+        dir: PathBuf,
+        resource: R,
+    ) -> Result<Self, Error> {
+        create_dir_all(&dir)?;
+        Ok(Self {
             root_scheduler,
             dir,
             resource,
             preempting: Mutex::new(None),
-        }
+        })
     }
 
     fn enqueue_task(&self, task_ident: &TaskIdent) -> Result<TaskFile, Error> {
         task_ident.enqueue_in_dir(&self.dir)
     }
 
-    fn dequeue_task(&mut self, task_ident: &TaskIdent) {
+    fn dequeue_task(&mut self, task_ident: &TaskIdent) -> Result<(), Error> {
         let mut guard = self.preempting.lock().unwrap();
 
         match &*guard {
@@ -425,7 +432,9 @@ impl<'a, R: Resource + Sync + Send + 'static> ResourceScheduler<R> {
             None => (),
         };
 
-        task_ident.destroy(&self.dir);
+        task_ident.destroy(&self.dir)?;
+
+        Ok(())
     }
 
     /// Try to acquire the preemption lock and record the results.
@@ -458,6 +467,7 @@ impl<'a, R: Resource + Sync + Send + 'static> ResourceScheduler<R> {
         ResourceLock::maybe_acquire(&self.dir, &self.resource, false)
     }
 
+    #[allow(dead_code)]
     fn preempt_lock(&self) -> Result<ResourceLock, Error> {
         ResourceLock::acquire(&self.dir, &self.resource, true)
     }
@@ -589,7 +599,7 @@ impl<'a, R: Resource + Sync + Send + 'static> ResourceScheduler<R> {
 
                         // Don't destroy this directory's task file until we are done performing the task
                         if !task_file.path.starts_with(self.dir.clone()) {
-                            task_file.destroy();
+                            task_file.destroy().unwrap();
                         };
                     });
                 }
@@ -626,10 +636,16 @@ impl<'a, R: Resource + Sync + Send + 'static> ResourceScheduler<R> {
                 task(&resource, &preemption_checker);
                 // Lock is dropped, and therefore released here, at end of scope after task has been performed.
             }
-            control_chan
+            if let Err(e) = control_chan
                 .lock()
                 .unwrap()
-                .send(Control::Finished(dir, ident));
+                .send(Control::Finished(dir, ident))
+            {
+                log::error!(
+                    "Error on sending Finished signal to the scheduler loop: {}",
+                    e
+                );
+            }
         });
     }
 }
@@ -650,9 +666,9 @@ impl<R: Resource> Preemption<R> for PreemptionChecker {
     }
 }
 
+#[cfg(test)]
 mod test {
     use super::*;
-    use crate::scheduler::futures::FutureExt;
 
     #[derive(Clone, Debug)]
     struct Rsrc {
@@ -684,16 +700,7 @@ mod test {
     #[test]
     fn test_scheduler() {
         let scheduler = &*SCHEDULER1;
-        let handle = Scheduler::start(scheduler).unwrap();
-
-        let root_dir = scheduler
-            .lock()
-            .unwrap()
-            .scheduler_root
-            .lock()
-            .unwrap()
-            .root
-            .clone();
+        let _handle = Scheduler::start(scheduler).unwrap();
 
         let result_state = Arc::new(Mutex::new(Vec::<usize>::new()));
         let num_resources = 3;
@@ -712,7 +719,7 @@ mod test {
                 priority,
                 &format!("Task0[{}]", i),
                 &resources,
-                move |r| {
+                move |_| {
                     result_state.lock().unwrap().push(0);
                     thread::sleep(Duration::from_millis(100));
                 },
@@ -787,7 +794,6 @@ mod test {
         let tasks2_len = 5;
         let mut out_rxs = Vec::with_capacity(tasks2_len);
         for i in 0..tasks2_len {
-            let result_state = Arc::clone(&result_state);
             // This example does not exercise the scheduler as such,
             // since results are harvested from the output channels
             // in the expected order (so scheduling does not come into play).
@@ -817,7 +823,7 @@ mod test {
             result_state.lock().unwrap().push(result);
         }
 
-        scheduler.lock().unwrap().stop();
+        scheduler.lock().unwrap().stop().unwrap();
 
         let tasks1_len = 5;
         assert_eq!(
@@ -832,7 +838,7 @@ mod test {
     #[test]
     fn test_guards() {
         let scheduler = &*SCHEDULER2;
-        let handle = Scheduler::start(scheduler).unwrap();
+        let _handle = Scheduler::start(scheduler).unwrap();
 
         let guard_failure = Arc::new(Mutex::new(false));
 
@@ -856,7 +862,7 @@ mod test {
                 move |r| {
                     let mutex = &resource_locks[&r.name()];
                     // No more than one task should be able to run on a single resource at a time!
-                    let lock = match mutex.try_lock() {
+                    let _lock = match mutex.try_lock() {
                         Ok(lock) => lock,
                         Err(_) => {
                             *guard_failure.lock().unwrap() = true;
@@ -877,7 +883,7 @@ mod test {
     #[test]
     fn test_schedule_fn() {
         let scheduler = &*SCHEDULER3;
-        let handle = Scheduler::start(scheduler).unwrap();
+        let _handle = Scheduler::start(scheduler).unwrap();
 
         thread::sleep(Duration::from_millis(300));
 
@@ -889,7 +895,7 @@ mod test {
                     n - i,
                     &format!("task {}", i),
                     &resources,
-                    move |_rsrc| i,
+                    move |_| i,
                     false,
                 )
             })
@@ -906,7 +912,7 @@ mod test {
             results.push(tokio_test::block_on(future).unwrap());
         }
 
-        let mut expected = (0..n).collect::<Vec<_>>();
+        let expected = (0..n).collect::<Vec<_>>();
 
         assert_eq!(expected, results);
     }

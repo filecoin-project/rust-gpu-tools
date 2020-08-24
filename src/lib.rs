@@ -1,2 +1,3 @@
 pub mod opencl;
-mod scheduler;
+#[cfg(feature = "scheduler")]
+pub mod scheduler;
