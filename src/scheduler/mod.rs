@@ -10,7 +10,6 @@ use rand::{thread_rng, Rng};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, create_dir_all, File};
-use std::io::Error;
 use std::iter;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -24,10 +23,12 @@ use self::{
     task_file::TaskFile,
 };
 
+mod error;
 mod resource_lock;
 mod task;
 mod task_file;
 mod task_ident;
+pub use error::Error;
 
 /// How long should we wait between polling by default?
 const POLL_INTERVAL_MS: Duration = Duration::from_millis(100);
@@ -148,7 +149,7 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
         resources: &Vec<R>,
         task_function: F,
         is_preemptible: bool,
-    ) -> mpsc::Receiver<T>
+    ) -> Result<mpsc::Receiver<T>, Error>
     where
         F: FnOnce(&R) -> T + Sync + Send,
         T: Sync + Send,
@@ -164,9 +165,8 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
             }),
             resources,
             is_preemptible,
-        )
-        .unwrap();
-        rx
+        )?;
+        Ok(rx)
     }
 
     /// Schedule `task_function` and block until result is available, then return it.
@@ -177,14 +177,14 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
         resources: &Vec<R>,
         task_function: F,
         is_preemptible: bool,
-    ) -> Result<T, mpsc::RecvError>
+    ) -> Result<T, Error>
     where
         F: FnOnce(&R) -> T + Sync + Send,
         T: Sync + Send,
     {
-        let rx = self.schedule(priority, name, resources, task_function, is_preemptible);
+        let rx = self.schedule(priority, name, resources, task_function, is_preemptible)?;
 
-        rx.recv()
+        Ok(rx.recv()?)
     }
 
     /// Schedule `task_function` and return a `Future` for the value.
@@ -195,7 +195,7 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
         resources: &Vec<R>,
         task_function: F,
         is_preemptible: bool,
-    ) -> futures::channel::oneshot::Receiver<T>
+    ) -> Result<futures::channel::oneshot::Receiver<T>, Error>
     where
         F: FnOnce(&R) -> T + Sync + Send,
         T: Sync + Send,
@@ -214,9 +214,8 @@ impl<'a, R: 'a + Resource + Send + Sync> Scheduler<R> {
             }),
             resources,
             is_preemptible,
-        )
-        .unwrap();
-        rx
+        )?;
+        Ok(rx)
     }
 
     pub fn stop(&self) -> Result<(), mpsc::SendError<Control>> {
@@ -420,7 +419,7 @@ impl<'a, R: Resource + Sync + Send + 'static> ResourceScheduler<R> {
     }
 
     fn enqueue_task(&self, task_ident: &TaskIdent) -> Result<TaskFile, Error> {
-        task_ident.enqueue_in_dir(&self.dir)
+        Ok(task_ident.enqueue_in_dir(&self.dir)?)
     }
 
     fn dequeue_task(&mut self, task_ident: &TaskIdent) -> Result<(), Error> {
@@ -440,7 +439,7 @@ impl<'a, R: Resource + Sync + Send + 'static> ResourceScheduler<R> {
     /// Try to acquire the preemption lock and record the results.
     /// Return true if the preemption lock was successfully acquired.
     fn maybe_preempt_with(&mut self, task_ident: &TaskIdent) -> Result<bool, Error> {
-        if !self.current_task_is_preemptible() {
+        if !self.current_task_is_preemptible()? {
             return Ok(false);
         }
 
@@ -460,54 +459,62 @@ impl<'a, R: Resource + Sync + Send + 'static> ResourceScheduler<R> {
     }
 
     fn lock(&self) -> Result<ResourceLock, Error> {
-        ResourceLock::acquire(&self.dir, &self.resource, false)
+        Ok(ResourceLock::acquire(&self.dir, &self.resource, false)?)
     }
 
     fn try_lock(&self) -> Result<Option<ResourceLock>, Error> {
-        ResourceLock::maybe_acquire(&self.dir, &self.resource, false)
+        Ok(ResourceLock::maybe_acquire(
+            &self.dir,
+            &self.resource,
+            false,
+        )?)
     }
 
     #[allow(dead_code)]
     fn preempt_lock(&self) -> Result<ResourceLock, Error> {
-        ResourceLock::acquire(&self.dir, &self.resource, true)
+        Ok(ResourceLock::acquire(&self.dir, &self.resource, true)?)
     }
 
     fn try_preempt_lock(&self) -> Result<Option<ResourceLock>, Error> {
-        ResourceLock::maybe_acquire(&self.dir, &self.resource, true)
+        Ok(ResourceLock::maybe_acquire(
+            &self.dir,
+            &self.resource,
+            true,
+        )?)
     }
 
     // Returns next-up `TaskIdent` and true if locked.
-    fn next_task_ident(&self) -> Option<(TaskIdent, bool)> {
-        Self::sorted_task_idents_and_locked_status(&self.dir)
+    fn next_task_ident(&self) -> Result<Option<(TaskIdent, bool)>, Error> {
+        Ok(Self::sorted_task_idents_and_locked_status(&self.dir)?
             .get(0)
-            .map(|x| x.clone())
+            .map(|x| x.clone()))
     }
 
-    fn current_task_is_preemptible(&self) -> bool {
-        Self::sorted_task_idents_and_locked_status(&self.dir)
+    fn current_task_is_preemptible(&self) -> Result<bool, Error> {
+        Ok(Self::sorted_task_idents_and_locked_status(&self.dir)?
             .iter()
             .filter(|(_, locked)| *locked)
             .take(1)
             .map(|x| x.1)
             .last()
-            .unwrap_or(false)
+            .unwrap_or(false))
     }
 
-    fn sorted_task_idents_and_locked_status(dir: &PathBuf) -> Vec<(TaskIdent, bool)> {
+    fn sorted_task_idents_and_locked_status(
+        dir: &PathBuf,
+    ) -> Result<Vec<(TaskIdent, bool)>, Error> {
         let mut ident_data = Vec::new();
-        let _ = fs::read_dir(&dir)
-            .unwrap()
-            .map(|res| {
-                res.map(|e| {
-                    // FIXME: unwraps
-                    let metadata = e.metadata().unwrap();
+        let _ = fs::read_dir(&dir)?
+            .map(|res| -> Result<(), Error> {
+                res.map(|e| -> Result<(), Error> {
+                    let metadata = e.metadata()?;
                     let task_ident = TaskIdent::from_str(
                         &e.file_name()
                             .to_str()
                             .expect("failed to create TaskIdent from string"),
                     )
                     .ok();
-                    let file = File::open(e.path()).unwrap();
+                    let file = File::open(e.path())?;
                     let locked = file.try_lock_exclusive().is_err();
                     if let Some(ident) = task_ident {
                         ident_data.push((
@@ -516,10 +523,10 @@ impl<'a, R: Resource + Sync + Send + 'static> ResourceScheduler<R> {
                             locked,
                         ))
                     };
-                })
+                    Ok(())
+                })?
             })
-            .collect::<Result<Vec<_>, Error>>()
-            .unwrap();
+            .collect::<Result<Vec<_>, Error>>()?;
         ident_data.sort_by(|(a_ident, a_create_date, _), (b_ident, b_create_date, _)| {
             // Sort first by (priority, creation date).
             let priority_ordering = a_ident.priority.partial_cmp(&b_ident.priority).unwrap();
@@ -529,10 +536,10 @@ impl<'a, R: Resource + Sync + Send + 'static> ResourceScheduler<R> {
             }
         });
 
-        ident_data
+        Ok(ident_data
             .iter()
             .map(|(ident, _create_date, locked)| (ident.clone(), *locked))
-            .collect()
+            .collect())
     }
 
     fn handle_next(
@@ -546,7 +553,7 @@ impl<'a, R: Resource + Sync + Send + 'static> ResourceScheduler<R> {
             return Ok(());
         }
 
-        let (ident, locked) = match self.next_task_ident() {
+        let (ident, locked) = match self.next_task_ident()? {
             Some(res) => res,
             None => return Ok(()),
         };
@@ -715,16 +722,22 @@ mod test {
             // while the next batch of `Task1`s is scheduled.
             let priority = 0;
             expected.push(0);
-            chans.push(scheduler.lock().unwrap().schedule(
-                priority,
-                &format!("Task0[{}]", i),
-                &resources,
-                move |_| {
-                    result_state.lock().unwrap().push(0);
-                    thread::sleep(Duration::from_millis(100));
-                },
-                false,
-            ));
+            chans.push(
+                scheduler
+                    .lock()
+                    .unwrap()
+                    .schedule(
+                        priority,
+                        &format!("Task0[{}]", i),
+                        &resources,
+                        move |_| {
+                            result_state.lock().unwrap().push(0);
+                            thread::sleep(Duration::from_millis(100));
+                        },
+                        false,
+                    )
+                    .unwrap(),
+            );
         }
         chans.into_iter().for_each(|ch| ch.recv().unwrap());
 
@@ -739,15 +752,21 @@ mod test {
             // Therefore, we push the highest id onto `expected` first.
             let priority = tasks1_len - id - 1;
             expected.push(priority);
-            chans.push(scheduler.lock().unwrap().schedule(
-                priority,
-                &format!("Task1[{}]", id),
-                &resources,
-                move |_| {
-                    result_state.lock().unwrap().push(id);
-                },
-                false,
-            ));
+            chans.push(
+                scheduler
+                    .lock()
+                    .unwrap()
+                    .schedule(
+                        priority,
+                        &format!("Task1[{}]", id),
+                        &resources,
+                        move |_| {
+                            result_state.lock().unwrap().push(id);
+                        },
+                        false,
+                    )
+                    .unwrap(),
+            );
         }
         chans.into_iter().for_each(|ch| ch.recv().unwrap());
 
@@ -760,15 +779,21 @@ mod test {
             let priority = tasks1_len - id - 1;
             expected.push(id);
             thread::sleep(Duration::from_millis(200));
-            chans.push(scheduler.lock().unwrap().schedule(
-                priority,
-                &format!("Task1[{}]", id),
-                &resources,
-                move |_| {
-                    result_state.lock().unwrap().push(id);
-                },
-                false,
-            ));
+            chans.push(
+                scheduler
+                    .lock()
+                    .unwrap()
+                    .schedule(
+                        priority,
+                        &format!("Task1[{}]", id),
+                        &resources,
+                        move |_| {
+                            result_state.lock().unwrap().push(id);
+                        },
+                        false,
+                    )
+                    .unwrap(),
+            );
         }
         chans.into_iter().for_each(|ch| ch.recv().unwrap());
 
@@ -779,15 +804,21 @@ mod test {
             // We therefore expect them to be performed in the order scheduled.
             // This case is somewhat trivial.
             expected.push(id);
-            chans.push(scheduler.lock().unwrap().schedule(
-                id,
-                &format!("Task1[{}]", id),
-                &resources,
-                move |_| {
-                    result_state.lock().unwrap().push(id);
-                },
-                false,
-            ));
+            chans.push(
+                scheduler
+                    .lock()
+                    .unwrap()
+                    .schedule(
+                        id,
+                        &format!("Task1[{}]", id),
+                        &resources,
+                        move |_| {
+                            result_state.lock().unwrap().push(id);
+                        },
+                        false,
+                    )
+                    .unwrap(),
+            );
         }
         chans.into_iter().for_each(|ch| ch.recv().unwrap());
 
@@ -805,17 +836,21 @@ mod test {
 
             let priority = tasks2_len - i - 1;
             expected.push(i * i);
-            scheduler.lock().unwrap().schedule(
-                priority,
-                &format!("Task2[{}]", i),
-                &resources,
-                move |_| {
-                    let input = i;
-                    let result = input * input;
-                    tx.lock().unwrap().send(result).unwrap();
-                },
-                false,
-            );
+            scheduler
+                .lock()
+                .unwrap()
+                .schedule(
+                    priority,
+                    &format!("Task2[{}]", i),
+                    &resources,
+                    move |_| {
+                        let input = i;
+                        let result = input * input;
+                        tx.lock().unwrap().send(result).unwrap();
+                    },
+                    false,
+                )
+                .unwrap();
         }
 
         for rx in out_rxs.iter() {
@@ -855,24 +890,30 @@ mod test {
         for id in 0..10 {
             let resource_locks = Arc::clone(&resource_locks);
             let guard_failure = Arc::clone(&guard_failure);
-            chans.push(scheduler.lock().unwrap().schedule(
-                0,
-                &format!("MyTask[{}]", id),
-                &resources,
-                move |r| {
-                    let mutex = &resource_locks[&r.name()];
-                    // No more than one task should be able to run on a single resource at a time!
-                    let _lock = match mutex.try_lock() {
-                        Ok(lock) => lock,
-                        Err(_) => {
-                            *guard_failure.lock().unwrap() = true;
-                            return;
-                        }
-                    };
-                    thread::sleep(Duration::from_millis(100));
-                },
-                false,
-            ));
+            chans.push(
+                scheduler
+                    .lock()
+                    .unwrap()
+                    .schedule(
+                        0,
+                        &format!("MyTask[{}]", id),
+                        &resources,
+                        move |r| {
+                            let mutex = &resource_locks[&r.name()];
+                            // No more than one task should be able to run on a single resource at a time!
+                            let _lock = match mutex.try_lock() {
+                                Ok(lock) => lock,
+                                Err(_) => {
+                                    *guard_failure.lock().unwrap() = true;
+                                    return;
+                                }
+                            };
+                            thread::sleep(Duration::from_millis(100));
+                        },
+                        false,
+                    )
+                    .unwrap(),
+            );
         }
         chans.into_iter().for_each(|ch| ch.recv().unwrap());
 
@@ -891,13 +932,11 @@ mod test {
         let resources = (0..n).map(|id| Rsrc { id }).collect::<Vec<_>>();
         let mut futures = (0..n)
             .map(|i| {
-                scheduler.lock().unwrap().schedule_future(
-                    n - i,
-                    &format!("task {}", i),
-                    &resources,
-                    move |_| i,
-                    false,
-                )
+                scheduler
+                    .lock()
+                    .unwrap()
+                    .schedule_future(n - i, &format!("task {}", i), &resources, move |_| i, false)
+                    .unwrap()
             })
             .collect::<Vec<_>>();
 
