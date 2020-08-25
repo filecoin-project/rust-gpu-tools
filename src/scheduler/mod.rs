@@ -689,26 +689,27 @@ mod test {
     }
 
     const TEST_POLL_INTERVAL: Duration = Duration::from_millis(5);
-    macro_rules! new_scheduler {
-        ($name:ident) => {
-            lazy_static! {
-                static ref $name: Mutex<Scheduler::<Rsrc>> = Mutex::new(
-                    Scheduler::<Rsrc>::new_with_poll_interval(
-                        tempfile::tempdir().unwrap().into_path(),
-                        TEST_POLL_INTERVAL,
-                    )
-                    .expect("Failed to create scheduler"),
-                );
+    macro_rules! scheduler_test {
+        ($test_name:ident, $body:expr) => {
+            #[test]
+            fn $test_name() {
+                lazy_static! {
+                    static ref SCHEDULER: Mutex<Scheduler::<Rsrc>> = Mutex::new(
+                        Scheduler::<Rsrc>::new_with_poll_interval(
+                            tempfile::tempdir().unwrap().into_path(),
+                            TEST_POLL_INTERVAL,
+                        )
+                        .expect("Failed to create scheduler"),
+                    );
+                }
+                let scheduler = &*SCHEDULER;
+                let _handle = Scheduler::start(scheduler).unwrap();
+                $body(scheduler)
             }
         };
     }
 
-    new_scheduler!(SCHEDULER1);
-    #[test]
-    fn test_scheduler() {
-        let scheduler = &*SCHEDULER1;
-        let _handle = Scheduler::start(scheduler).unwrap();
-
+    scheduler_test!(test_scheduler, |scheduler: &Mutex<Scheduler::<Rsrc>>| {
         let result_state = Arc::new(Mutex::new(Vec::<usize>::new()));
         let num_resources = 3;
         let resources = (0..num_resources).map(|id| Rsrc { id }).collect::<Vec<_>>();
@@ -867,14 +868,9 @@ mod test {
         );
 
         assert_eq!(expected, result_state.lock().unwrap().clone());
-    }
+    });
 
-    new_scheduler!(SCHEDULER2);
-    #[test]
-    fn test_guards() {
-        let scheduler = &*SCHEDULER2;
-        let _handle = Scheduler::start(scheduler).unwrap();
-
+    scheduler_test!(test_guards, |scheduler: &Mutex<Scheduler::<Rsrc>>| {
         let guard_failure = Arc::new(Mutex::new(false));
 
         let resources = (0..3).map(|id| Rsrc { id }).collect::<Vec<_>>();
@@ -918,14 +914,9 @@ mod test {
         chans.into_iter().for_each(|ch| ch.recv().unwrap());
 
         assert!(!*guard_failure.lock().unwrap());
-    }
+    });
 
-    new_scheduler!(SCHEDULER3);
-    #[test]
-    fn test_schedule_fn() {
-        let scheduler = &*SCHEDULER3;
-        let _handle = Scheduler::start(scheduler).unwrap();
-
+    scheduler_test!(test_schedule_fn, |scheduler: &Mutex<Scheduler::<Rsrc>>| {
         thread::sleep(Duration::from_millis(300));
 
         let n = 10;
@@ -954,5 +945,5 @@ mod test {
         let expected = (0..n).collect::<Vec<_>>();
 
         assert_eq!(expected, results);
-    }
+    });
 }
