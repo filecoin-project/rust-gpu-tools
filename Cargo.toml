@@ -1,6 +1,6 @@
 [package]
 name = "rust-gpu-tools"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Keyvan Kambakhsh <keyvankambakhsh@gmail.com>", "porcuquine <porcuquine@gmail.com>"]
 description = "Rust OpenCL tools"
 edition = "2018"
