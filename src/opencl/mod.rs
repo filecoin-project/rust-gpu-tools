@@ -119,6 +119,7 @@ impl Device {
 
     pub fn all() -> GPUResult<Vec<Device>> {
         let mut all = Vec::new();
+
         for b in &[Brand::Nvidia, Brand::Amd] {
             all.append(&mut Device::by_brand(*b)?);
         }
@@ -330,4 +331,17 @@ macro_rules! call_kernel {
         $(.arg($arg))*
         .run()
     }};
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_device_all() {
+        for _ in 0..10 {
+            let devices = Device::all().unwrap();
+            dbg!(&devices.len());
+        }
+    }
 }
