@@ -1,4 +1,5 @@
 use super::*;
+use lazy_static::lazy_static;
 use std::convert::TryInto;
 
 #[repr(C)]
@@ -57,11 +58,21 @@ pub fn cache_path(device: &Device, cl_source: &str) -> std::io::Result<std::path
     Ok(path.join(digest))
 }
 
+lazy_static! {
+    pub static ref PLATFORM_LIST_AVAILABLE: bool = ocl::Platform::list().is_ok();
+}
+
 pub fn find_platform(platform_name: &str) -> ocl::Result<Option<ocl::Platform>> {
-    Ok(ocl::Platform::list()?
-        .into_iter()
-        .find(|&p| match p.name() {
-            Ok(p) => p == platform_name.to_string(),
-            Err(_) => false,
-        }))
+    // If no platforms are available, querying the list can be very slow (10 seconds in practice).
+    // Only check once, and avoid the expensive lookup just to find nothing.
+    if !*PLATFORM_LIST_AVAILABLE {
+        Ok(None)
+    } else {
+        Ok(ocl::Platform::list()?
+            .into_iter()
+            .find(|&p| match p.clone().name() {
+                Ok(p) => p == platform_name.to_string(),
+                Err(_) => false,
+            }))
+    }
 }
