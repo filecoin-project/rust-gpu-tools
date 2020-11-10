@@ -7,6 +7,7 @@ use std::fmt::Write;
 use std::hash::{Hash, Hasher};
 
 pub type BusId = u32;
+pub type cl_device_id = ocl::ffi::cl_device_id;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Brand {
@@ -83,7 +84,7 @@ pub struct Device {
     memory: u64,
     bus_id: BusId,
     platform: ocl::Platform,
-    device: ocl::Device,
+    pub device: ocl::Device,
 }
 
 impl Hash for Device {
@@ -153,6 +154,33 @@ impl Device {
                 .collect(),
             None => Ok(Vec::new()),
         }
+    }
+    pub fn cl_device_id(&self) -> ocl::ffi::cl_device_id {
+        self.device.as_core().as_raw()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum GPUSelector {
+    BusId(u32),
+    Index(usize),
+}
+
+impl GPUSelector {
+    pub fn get_bus_id(&self) -> GPUResult<u32> {
+        match self {
+            GPUSelector::BusId(bus_id) => Ok(*bus_id),
+            GPUSelector::Index(index) => Ok(get_device_bus_id_by_index(*index)?),
+        }
+    }
+}
+
+fn get_device_bus_id_by_index(index: usize) -> GPUResult<BusId> {
+    let all_devices = Device::all()?;
+    if index < all_devices.len() {
+        Ok(all_devices[index].bus_id)
+    } else {
+        Err(GPUError::DeviceIndexOutOfRange)
     }
 }
 

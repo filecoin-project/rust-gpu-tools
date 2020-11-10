@@ -8,6 +8,8 @@ pub enum GPUError {
     DeviceNotFound,
     #[error("Device info not available!")]
     DeviceInfoNotAvailable(ocl::enums::DeviceInfo),
+    #[error("Device index out of range!")]
+    DeviceIndexOutOfRange,
     #[error("Program info not available!")]
     ProgramInfoNotAvailable(ocl::enums::ProgramInfo),
     #[error("IO Error: {0}")]
