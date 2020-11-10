@@ -21,6 +21,18 @@ pub fn is_little_endian(d: ocl::Device) -> GPUResult<bool> {
     }
 }
 
+pub fn get_bus_id(d: ocl::Device) -> ocl::Result<u32> {
+    let vendor = d.vendor()?;
+    match vendor.as_str() {
+        "AMD" => get_amd_bus_id(d),
+        "NVIDIA" => get_nvidia_bus_id(d),
+        _ => Err(ocl::Error::from(format!(
+            "cannot get bus ID for device with vendor {} ",
+            vendor
+        ))),
+    }
+}
+
 pub fn get_nvidia_bus_id(d: ocl::Device) -> ocl::Result<u32> {
     const CL_DEVICE_PCI_BUS_ID_NV: u32 = 0x4008;
     let result = d.info_raw(CL_DEVICE_PCI_BUS_ID_NV)?;
@@ -46,8 +58,14 @@ pub fn cache_path(device: &Device, cl_source: &str) -> std::io::Result<std::path
         std::fs::create_dir(&path)?;
     }
     let mut hasher = Sha256::new();
+    // If there are multiple devices with the same name and neither has a BusID,
+    // then there will be a collision. BusID can be missing in the case of an Apple
+    // GPU. For now, we assume that in the unlikely event of a collision, the same
+    // cache can be used.
     hasher.input(device.name.as_bytes());
-    hasher.input(device.bus_id.to_be_bytes());
+    if let Some(bus_id) = device.bus_id {
+        hasher.input(bus_id.to_be_bytes());
+    }
     hasher.input(cl_source.as_bytes());
     let mut digest = String::new();
     for &byte in hasher.result()[..].iter() {
