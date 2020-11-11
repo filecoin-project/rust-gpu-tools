@@ -124,14 +124,19 @@ impl Device {
 
     /// Return all available GPU devices of supported brands, ordered by brand as
     /// defined by `Brand::all()`.
-    pub fn all() -> GPUResult<Vec<&'static Device>> {
-        Ok(utils::DEVICES.values().flatten().collect())
+    pub fn all() -> Vec<&'static Device> {
+        Self::all_iter().collect()
+    }
+
+    pub fn all_iter() -> impl Iterator<Item = &'static Device> {
+        Brand::all()
+            .into_iter()
+            .filter_map(|brand| utils::DEVICES.get(&brand))
+            .flatten()
     }
 
     pub fn by_bus_id(bus_id: BusId) -> GPUResult<&'static Device> {
-        utils::DEVICES
-            .values()
-            .flatten()
+        Device::all_iter()
             .find(|d| match d.bus_id {
                 Some(id) => bus_id == id,
                 None => false,
@@ -164,10 +169,7 @@ impl GPUSelector {
 
     pub fn get_device(&self) -> Option<&'static Device> {
         match self {
-            GPUSelector::BusId(bus_id) => utils::DEVICES
-                .values()
-                .flatten()
-                .find(|d| d.bus_id == Some(*bus_id)),
+            GPUSelector::BusId(bus_id) => Device::all_iter().find(|d| d.bus_id == Some(*bus_id)),
             GPUSelector::Index(index) => get_device_by_index(*index),
         }
     }
@@ -195,7 +197,7 @@ fn get_device_bus_id_by_index(index: usize) -> Option<BusId> {
 }
 
 fn get_device_by_index(index: usize) -> Option<&'static Device> {
-    utils::DEVICES.values().flatten().nth(index)
+    Device::all_iter().nth(index)
 }
 
 pub fn get_memory(d: ocl::Device) -> GPUResult<u64> {
@@ -382,7 +384,7 @@ mod test {
     #[test]
     fn test_device_all() {
         for _ in 0..10 {
-            let devices = Device::all().unwrap();
+            let devices = Device::all();
             dbg!(&devices.len());
         }
     }
