@@ -122,8 +122,8 @@ impl Device {
         self.bus_id
     }
 
-    // Return all available GPU devices of supported brands, ordered by brand as
-    // defined by Brand::all().
+    /// Return all available GPU devices of supported brands, ordered by brand as
+    /// defined by `Brand::all()`.
     pub fn all() -> GPUResult<Vec<Device>> {
         let mut all = Vec::new();
         for b in &Brand::all() {
@@ -154,16 +154,14 @@ impl Device {
                         d.is_available().unwrap_or(false)
                     })
                     .map(|d| {
-                        (|| -> GPUResult<Device> {
-                            Ok(Device {
-                                brand,
-                                name: d.name()?,
-                                memory: get_memory(d)?,
-                                bus_id: utils::get_bus_id(d).ok(),
-                                platform: plat,
-                                device: d,
-                            })
-                        })()
+                        Ok(Device {
+                            brand,
+                            name: d.name()?,
+                            memory: get_memory(d)?,
+                            bus_id: utils::get_bus_id(d).ok(),
+                            platform: plat,
+                            device: d,
+                        })
                     })
                     .collect()
             }
@@ -191,7 +189,13 @@ impl GPUSelector {
 
     pub fn get_device(&self) -> Option<Device> {
         match self {
-            GPUSelector::BusId(_bus_id) => todo!(),
+            GPUSelector::BusId(bus_id) => match Device::all() {
+                Ok(devices) => devices
+                    .iter()
+                    .find(|d| d.bus_id == Some(*bus_id))
+                    .map(Clone::clone),
+                Err(_) => None,
+            },
             GPUSelector::Index(index) => get_device_by_index(*index),
         }
     }

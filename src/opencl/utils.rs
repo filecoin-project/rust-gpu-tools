@@ -58,10 +58,11 @@ pub fn cache_path(device: &Device, cl_source: &str) -> std::io::Result<std::path
         std::fs::create_dir(&path)?;
     }
     let mut hasher = Sha256::new();
-    // If there are multiple devices with the same name and neither has a BusID,
-    // then there will be a collision. BusID can be missing in the case of an Apple
+    // If there are multiple devices with the same name and neither has a Bus-Id,
+    // then there will be a collision. Bus-Id can be missing in the case of an Apple
     // GPU. For now, we assume that in the unlikely event of a collision, the same
     // cache can be used.
+    // TODO: We might be able to get around this issue by using cl_vendor_id instead of Bus-Id.
     hasher.input(device.name.as_bytes());
     if let Some(bus_id) = device.bus_id {
         hasher.input(bus_id.to_be_bytes());
