@@ -1,10 +1,13 @@
-mod error;
-mod utils;
-
-pub use error::*;
 use sha2::{Digest, Sha256};
 use std::fmt::Write;
 use std::hash::{Hash, Hasher};
+
+mod buffer;
+mod error;
+mod utils;
+
+pub use self::buffer::*;
+pub use self::error::*;
 
 pub type BusId = u32;
 
@@ -21,53 +24,6 @@ pub enum Brand {
 impl Brand {
     fn all() -> Vec<Brand> {
         vec![Brand::Nvidia, Brand::Amd, Brand::Apple]
-    }
-}
-
-pub struct Buffer<T> {
-    buffer: ocl::Buffer<u8>,
-    _phantom: std::marker::PhantomData<T>,
-}
-
-impl<T> Buffer<T> {
-    pub fn length(&self) -> usize {
-        self.buffer.len() / std::mem::size_of::<T>()
-    }
-
-    pub fn write_from(&mut self, offset: usize, data: &[T]) -> GPUResult<()> {
-        assert!(offset + data.len() <= self.length());
-        self.buffer
-            .create_sub_buffer(
-                None,
-                offset * std::mem::size_of::<T>(),
-                data.len() * std::mem::size_of::<T>(),
-            )?
-            .write(unsafe {
-                std::slice::from_raw_parts(
-                    data.as_ptr() as *const T as *const u8,
-                    data.len() * std::mem::size_of::<T>(),
-                )
-            })
-            .enq()?;
-        Ok(())
-    }
-
-    pub fn read_into(&self, offset: usize, data: &mut [T]) -> GPUResult<()> {
-        assert!(offset + data.len() <= self.length());
-        self.buffer
-            .create_sub_buffer(
-                None,
-                offset * std::mem::size_of::<T>(),
-                data.len() * std::mem::size_of::<T>(),
-            )?
-            .read(unsafe {
-                std::slice::from_raw_parts_mut(
-                    data.as_mut_ptr() as *mut T as *mut u8,
-                    data.len() * std::mem::size_of::<T>(),
-                )
-            })
-            .enq()?;
-        Ok(())
     }
 }
 
@@ -219,6 +175,7 @@ impl Program {
     pub fn device(&self) -> Device {
         self.device.clone()
     }
+
     pub fn from_opencl(device: Device, src: &str) -> GPUResult<Program> {
         let cached = utils::cache_path(&device, src)?;
         if std::path::Path::exists(&cached) {
@@ -243,7 +200,9 @@ impl Program {
             Ok(prog)
         }
     }
+
     pub fn from_binary(device: Device, bin: Vec<u8>) -> GPUResult<Program> {
+        log::info!("loading binary for device {:?}", device);
         let context = ocl::Context::builder()
             .platform(device.platform)
             .devices(device.device)
@@ -260,6 +219,7 @@ impl Program {
             queue,
         })
     }
+
     pub fn to_binary(&self) -> GPUResult<Vec<u8>> {
         match self.program.info(ocl::enums::ProgramInfo::Binaries)? {
             ocl::enums::ProgramInfoResult::Binaries(bins) => Ok(bins[0].clone()),
@@ -268,7 +228,8 @@ impl Program {
             )),
         }
     }
-    pub fn create_buffer<T>(&self, length: usize) -> GPUResult<Buffer<T>> {
+
+    pub fn create_buffer<T: Sized>(&self, length: usize) -> GPUResult<Buffer<T>> {
         assert!(length > 0);
         let buff = ocl::Buffer::<u8>::builder()
             .queue(self.queue.clone())
@@ -282,7 +243,7 @@ impl Program {
         })
     }
 
-    pub fn create_buffer_flexible<T>(&self, max_length: usize) -> GPUResult<Buffer<T>> {
+    pub fn create_buffer_flexible<T: Sized>(&self, max_length: usize) -> GPUResult<Buffer<T>> {
         let mut curr = max_length;
         let mut step = max_length / 2;
         let mut n = 1;
@@ -297,6 +258,7 @@ impl Program {
         }
         self.create_buffer::<T>(n)
     }
+
     pub fn create_kernel(&self, name: &str, gws: usize, lws: Option<usize>) -> Kernel<'_> {
         let mut builder = ocl::Kernel::builder();
         builder.name(name);
@@ -359,6 +321,7 @@ impl<'a> Kernel<'a> {
         t.push(&mut self);
         self
     }
+
     pub fn run(self) -> GPUResult<()> {
         let kern = self.builder.build()?;
         unsafe {
