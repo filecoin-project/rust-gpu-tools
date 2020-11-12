@@ -7,12 +7,21 @@ use std::fmt::Write;
 use std::hash::{Hash, Hasher};
 
 pub type BusId = u32;
+
+#[allow(non_camel_case_types)]
 pub type cl_device_id = ocl::ffi::cl_device_id;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Brand {
     Amd,
+    Apple,
     Nvidia,
+}
+
+impl Brand {
+    fn all() -> Vec<Brand> {
+        vec![Brand::Nvidia, Brand::Amd, Brand::Apple]
+    }
 }
 
 pub struct Buffer<T> {
@@ -67,13 +76,8 @@ impl Brand {
         match self {
             Brand::Nvidia => "NVIDIA CUDA",
             Brand::Amd => "AMD Accelerated Parallel Processing",
+            Brand::Apple => "Apple",
         }
-    }
-    fn extract_bus_id(&self, d: ocl::Device) -> GPUResult<BusId> {
-        Ok(match self {
-            Brand::Nvidia => utils::get_nvidia_bus_id(d)?,
-            Brand::Amd => utils::get_amd_bus_id(d)?,
-        })
     }
 }
 
@@ -82,7 +86,7 @@ pub struct Device {
     brand: Brand,
     name: String,
     memory: u64,
-    bus_id: BusId,
+    bus_id: Option<BusId>,
     platform: ocl::Platform,
     pub device: ocl::Device,
 }
@@ -114,47 +118,36 @@ impl Device {
     pub fn is_little_endian(&self) -> GPUResult<bool> {
         Ok(utils::is_little_endian(self.device)?)
     }
-    pub fn bus_id(&self) -> BusId {
+    pub fn bus_id(&self) -> Option<BusId> {
         self.bus_id
     }
 
-    pub fn all() -> GPUResult<Vec<Device>> {
-        let mut all = Vec::new();
-
-        for b in &[Brand::Nvidia, Brand::Amd] {
-            all.append(&mut Device::by_brand(*b)?);
-        }
-        Ok(all)
+    /// Return all available GPU devices of supported brands, ordered by brand as
+    /// defined by `Brand::all()`.
+    pub fn all() -> Vec<&'static Device> {
+        Self::all_iter().collect()
     }
 
-    pub fn by_bus_id(bus_id: BusId) -> GPUResult<Device> {
-        Device::all().and_then(|devs| {
-            devs.into_iter()
-                .find(|d| d.bus_id == bus_id)
-                .ok_or(GPUError::DeviceNotFound)
-        })
+    pub fn all_iter() -> impl Iterator<Item = &'static Device> {
+        Brand::all()
+            .into_iter()
+            .filter_map(|brand| utils::DEVICES.get(&brand))
+            .flatten()
     }
 
-    pub fn by_brand(brand: Brand) -> GPUResult<Vec<Device>> {
-        match utils::find_platform(brand.platform_name())? {
-            Some(plat) => ocl::Device::list_all(plat)?
-                .into_iter()
-                .map(|d| {
-                    (|| -> GPUResult<Device> {
-                        Ok(Device {
-                            brand,
-                            name: d.name()?,
-                            memory: get_memory(d)?,
-                            bus_id: brand.extract_bus_id(d)?,
-                            platform: plat,
-                            device: d,
-                        })
-                    })()
-                })
-                .collect(),
-            None => Ok(Vec::new()),
-        }
+    pub fn by_bus_id(bus_id: BusId) -> GPUResult<&'static Device> {
+        Device::all_iter()
+            .find(|d| match d.bus_id {
+                Some(id) => bus_id == id,
+                None => false,
+            })
+            .ok_or(GPUError::DeviceNotFound)
     }
+
+    pub fn by_brand(brand: Brand) -> Option<&'static Vec<Device>> {
+        utils::DEVICES.get(&brand)
+    }
+
     pub fn cl_device_id(&self) -> ocl::ffi::cl_device_id {
         self.device.as_core().as_raw()
     }
@@ -167,21 +160,44 @@ pub enum GPUSelector {
 }
 
 impl GPUSelector {
-    pub fn get_bus_id(&self) -> GPUResult<u32> {
+    pub fn get_bus_id(&self) -> Option<u32> {
         match self {
-            GPUSelector::BusId(bus_id) => Ok(*bus_id),
-            GPUSelector::Index(index) => Ok(get_device_bus_id_by_index(*index)?),
+            GPUSelector::BusId(bus_id) => Some(*bus_id),
+            GPUSelector::Index(index) => get_device_bus_id_by_index(*index),
+        }
+    }
+
+    pub fn get_device(&self) -> Option<&'static Device> {
+        match self {
+            GPUSelector::BusId(bus_id) => Device::all_iter().find(|d| d.bus_id == Some(*bus_id)),
+            GPUSelector::Index(index) => get_device_by_index(*index),
+        }
+    }
+
+    pub fn get_key(&self) -> String {
+        match self {
+            GPUSelector::BusId(id) => format!("BusID: {}", id),
+            GPUSelector::Index(idx) => {
+                if let Some(id) = self.get_bus_id() {
+                    format!("BusID: {}", id)
+                } else {
+                    format!("Index: {}", idx)
+                }
+            }
         }
     }
 }
 
-fn get_device_bus_id_by_index(index: usize) -> GPUResult<BusId> {
-    let all_devices = Device::all()?;
-    if index < all_devices.len() {
-        Ok(all_devices[index].bus_id)
+fn get_device_bus_id_by_index(index: usize) -> Option<BusId> {
+    if let Some(device) = get_device_by_index(index) {
+        device.bus_id
     } else {
-        Err(GPUError::DeviceIndexOutOfRange)
+        None
     }
+}
+
+fn get_device_by_index(index: usize) -> Option<&'static Device> {
+    Device::all_iter().nth(index)
 }
 
 pub fn get_memory(d: ocl::Device) -> GPUResult<u64> {
@@ -368,7 +384,7 @@ mod test {
     #[test]
     fn test_device_all() {
         for _ in 0..10 {
-            let devices = Device::all().unwrap();
+            let devices = Device::all();
             dbg!(&devices.len());
         }
     }

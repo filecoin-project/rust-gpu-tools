@@ -1,6 +1,10 @@
-use super::*;
-use lazy_static::lazy_static;
+use std::collections::HashMap;
 use std::convert::TryInto;
+
+use lazy_static::lazy_static;
+use log::warn;
+
+use super::*;
 
 #[repr(C)]
 #[derive(Debug, Clone, Default)]
@@ -18,6 +22,18 @@ pub fn is_little_endian(d: ocl::Device) -> GPUResult<bool> {
         _ => Err(GPUError::DeviceInfoNotAvailable(
             ocl::enums::DeviceInfo::EndianLittle,
         )),
+    }
+}
+
+pub fn get_bus_id(d: ocl::Device) -> ocl::Result<u32> {
+    let vendor = d.vendor()?;
+    match vendor.as_str() {
+        "AMD" => get_amd_bus_id(d),
+        "NVIDIA" => get_nvidia_bus_id(d),
+        _ => Err(ocl::Error::from(format!(
+            "cannot get bus ID for device with vendor {} ",
+            vendor
+        ))),
     }
 }
 
@@ -46,8 +62,15 @@ pub fn cache_path(device: &Device, cl_source: &str) -> std::io::Result<std::path
         std::fs::create_dir(&path)?;
     }
     let mut hasher = Sha256::new();
+    // If there are multiple devices with the same name and neither has a Bus-Id,
+    // then there will be a collision. Bus-Id can be missing in the case of an Apple
+    // GPU. For now, we assume that in the unlikely event of a collision, the same
+    // cache can be used.
+    // TODO: We might be able to get around this issue by using cl_vendor_id instead of Bus-Id.
     hasher.input(device.name.as_bytes());
-    hasher.input(device.bus_id.to_be_bytes());
+    if let Some(bus_id) = device.bus_id {
+        hasher.input(bus_id.to_be_bytes());
+    }
     hasher.input(cl_source.as_bytes());
     let mut digest = String::new();
     for &byte in hasher.result()[..].iter() {
@@ -59,20 +82,61 @@ pub fn cache_path(device: &Device, cl_source: &str) -> std::io::Result<std::path
 }
 
 lazy_static! {
-    pub static ref PLATFORM_LIST_AVAILABLE: bool = ocl::Platform::list().is_ok();
+    pub static ref PLATFORMS: Vec<ocl::Platform> = ocl::Platform::list().unwrap_or_default();
+    pub static ref DEVICES: HashMap<Brand, Vec<Device>> = build_device_list();
 }
 
-pub fn find_platform(platform_name: &str) -> ocl::Result<Option<ocl::Platform>> {
-    // If no platforms are available, querying the list can be very slow (10 seconds in practice).
-    // Only check once, and avoid the expensive lookup just to find nothing.
-    if !*PLATFORM_LIST_AVAILABLE {
-        Ok(None)
-    } else {
-        Ok(ocl::Platform::list()?
-            .into_iter()
-            .find(|&p| match p.clone().name() {
-                Ok(p) => p == platform_name.to_string(),
-                Err(_) => false,
-            }))
+pub fn find_platform(platform_name: &str) -> ocl::Result<Option<&ocl::Platform>> {
+    let platform = PLATFORMS.iter().find(|&p| match p.clone().name() {
+        Ok(p) => p == platform_name.to_string(),
+        Err(_) => false,
+    });
+    Ok(platform)
+}
+
+fn build_device_list() -> HashMap<Brand, Vec<Device>> {
+    let brands = Brand::all();
+    let mut map = HashMap::with_capacity(brands.len());
+
+    for brand in brands.into_iter() {
+        match find_platform(brand.platform_name()) {
+            Ok(Some(platform)) => {
+                let devices = ocl::Device::list(platform, Some(ocl::core::DeviceType::GPU))
+                    .map_err(Into::into)
+                    .and_then(|devices| {
+                        devices
+                            .into_iter()
+                            .filter(|d| {
+                                // Only return available devices.
+                                d.is_available().unwrap_or(false)
+                            })
+                            .map(|d| -> GPUResult<_> {
+                                Ok(Device {
+                                    brand,
+                                    name: d.name()?,
+                                    memory: get_memory(d)?,
+                                    bus_id: utils::get_bus_id(d).ok(),
+                                    platform: *platform,
+                                    device: d,
+                                })
+                            })
+                            .collect::<GPUResult<Vec<_>>>()
+                    });
+                match devices {
+                    Ok(devices) => {
+                        map.insert(brand, devices);
+                    }
+                    Err(err) => {
+                        warn!("Unable to retrieve devices for {:?}: {:?}", brand, err);
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                warn!("Platform issue for brand {:?}: {:?}", brand, err);
+            }
+        }
     }
+
+    map
 }
