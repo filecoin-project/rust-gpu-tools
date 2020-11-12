@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 
 use lazy_static::lazy_static;
-use log::warn;
+use log::{debug, warn};
 
 use super::*;
 
@@ -108,7 +108,17 @@ fn build_device_list() -> HashMap<Brand, Vec<Device>> {
                             .into_iter()
                             .filter(|d| {
                                 // Only return available devices.
-                                d.is_available().unwrap_or(false)
+                                if !d.is_available().unwrap_or(false) {
+                                    return false;
+                                }
+
+                                // Only use devices from the accepted brands
+                                let name = d.name().unwrap_or_default().to_lowercase();
+                                if name.contains("amd") || name.contains("nvidia") {
+                                    return true;
+                                }
+
+                                false
                             })
                             .map(|d| -> GPUResult<_> {
                                 Ok(Device {
@@ -138,5 +148,6 @@ fn build_device_list() -> HashMap<Brand, Vec<Device>> {
         }
     }
 
+    debug!("loaded devices: {:?}", map);
     map
 }
