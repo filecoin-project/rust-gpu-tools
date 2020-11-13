@@ -107,17 +107,16 @@ fn build_device_list() -> HashMap<Brand, Vec<Device>> {
                         devices
                             .into_iter()
                             .filter(|d| {
-                                // Only return available devices.
-                                if !d.is_available().unwrap_or(false) {
-                                    return false;
+                                if let Ok(vendor) = d.vendor() {
+                                    match vendor.as_str() {
+                                        // Only use devices from the accepted brands ...
+                                        "AMD" | "NVIDIA" => {
+                                            // ... which are available.
+                                            return d.is_available().unwrap_or(false);
+                                        }
+                                        _ => (),
+                                    }
                                 }
-
-                                // Only use devices from the accepted brands
-                                let name = d.name().unwrap_or_default().to_lowercase();
-                                if name.contains("amd") || name.contains("nvidia") {
-                                    return true;
-                                }
-
                                 false
                             })
                             .map(|d| -> GPUResult<_> {
