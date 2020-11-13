@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 
 use lazy_static::lazy_static;
-use log::warn;
+use log::{debug, warn};
 
 use super::*;
 
@@ -16,6 +16,9 @@ struct cl_amd_device_topology {
     function: u8,
 }
 
+const AMD_DEVICE_VENDOR_STRING: &'static str = "AMD";
+const NVIDIA_DEVICE_VENDOR_STRING: &'static str = "NVIDIA Corporation";
+
 pub fn is_little_endian(d: ocl::Device) -> GPUResult<bool> {
     match d.info(ocl::enums::DeviceInfo::EndianLittle)? {
         ocl::enums::DeviceInfoResult::EndianLittle(b) => Ok(b),
@@ -28,8 +31,8 @@ pub fn is_little_endian(d: ocl::Device) -> GPUResult<bool> {
 pub fn get_bus_id(d: ocl::Device) -> ocl::Result<u32> {
     let vendor = d.vendor()?;
     match vendor.as_str() {
-        "AMD" => get_amd_bus_id(d),
-        "NVIDIA" => get_nvidia_bus_id(d),
+        AMD_DEVICE_VENDOR_STRING => get_amd_bus_id(d),
+        NVIDIA_DEVICE_VENDOR_STRING => get_nvidia_bus_id(d),
         _ => Err(ocl::Error::from(format!(
             "cannot get bus ID for device with vendor {} ",
             vendor
@@ -107,8 +110,17 @@ fn build_device_list() -> HashMap<Brand, Vec<Device>> {
                         devices
                             .into_iter()
                             .filter(|d| {
-                                // Only return available devices.
-                                d.is_available().unwrap_or(false)
+                                if let Ok(vendor) = d.vendor() {
+                                    match vendor.as_str() {
+                                        // Only use devices from the accepted vendors ...
+                                        AMD_DEVICE_VENDOR_STRING | NVIDIA_DEVICE_VENDOR_STRING => {
+                                            // ... which are available.
+                                            return d.is_available().unwrap_or(false);
+                                        }
+                                        _ => (),
+                                    }
+                                }
+                                false
                             })
                             .map(|d| -> GPUResult<_> {
                                 Ok(Device {
@@ -138,5 +150,6 @@ fn build_device_list() -> HashMap<Brand, Vec<Device>> {
         }
     }
 
+    debug!("loaded devices: {:?}", map);
     map
 }

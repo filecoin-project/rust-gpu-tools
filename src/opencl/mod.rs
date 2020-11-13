@@ -19,6 +19,14 @@ pub enum Brand {
 }
 
 impl Brand {
+    pub fn platform_name(&self) -> &'static str {
+        match self {
+            Brand::Nvidia => "NVIDIA CUDA",
+            Brand::Amd => "AMD Accelerated Parallel Processing",
+            Brand::Apple => "Apple",
+        }
+    }
+
     fn all() -> Vec<Brand> {
         vec![Brand::Nvidia, Brand::Amd, Brand::Apple]
     }
@@ -68,16 +76,6 @@ impl<T> Buffer<T> {
             })
             .enq()?;
         Ok(())
-    }
-}
-
-impl Brand {
-    pub fn platform_name(&self) -> &'static str {
-        match self {
-            Brand::Nvidia => "NVIDIA CUDA",
-            Brand::Amd => "AMD Accelerated Parallel Processing",
-            Brand::Apple => "Apple",
-        }
     }
 }
 
