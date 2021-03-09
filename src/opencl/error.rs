@@ -1,30 +1,33 @@
+use opencl3::{device::DeviceInfo, error_codes::ClError, program::ProgramInfo};
+
 #[derive(thiserror::Error, Debug)]
 #[allow(clippy::upper_case_acronyms)]
 pub enum GPUError {
-    #[error("Ocl Error: {0}")]
-    Ocl(ocl::Error),
+    #[error("Opencl3 Error: {0}{}", match .1 {
+       Some(message) => format!(" {}", message),
+       None => "".to_string(),
+    })]
+    Opencl3(ClError, Option<String>),
     #[error("Device not found!")]
     DeviceNotFound,
     #[error("Device info not available!")]
-    DeviceInfoNotAvailable(ocl::enums::DeviceInfo),
+    DeviceInfoNotAvailable(DeviceInfo),
     #[error("Program info not available!")]
-    ProgramInfoNotAvailable(ocl::enums::ProgramInfo),
+    ProgramInfoNotAvailable(ProgramInfo),
+    #[error("Kernel with name {0} not found!")]
+    KernelNotFound(String),
     #[error("IO Error: {0}")]
     IO(#[from] std::io::Error),
+    #[error("Cannot get bus ID for device with vendor {0}")]
+    MissingBusId(String),
 }
 
 #[allow(clippy::upper_case_acronyms)]
 #[allow(dead_code)]
 pub type GPUResult<T> = std::result::Result<T, GPUError>;
 
-impl From<ocl::Error> for GPUError {
-    fn from(error: ocl::Error) -> Self {
-        GPUError::Ocl(error)
-    }
-}
-
-impl From<ocl::core::Error> for GPUError {
-    fn from(error: ocl::core::Error) -> Self {
-        GPUError::Ocl(error.into())
+impl From<ClError> for GPUError {
+    fn from(error: ClError) -> Self {
+        GPUError::Opencl3(error, None)
     }
 }

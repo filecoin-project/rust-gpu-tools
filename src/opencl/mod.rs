@@ -1,15 +1,25 @@
 mod error;
 mod utils;
 
+use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::ptr;
 
 pub use error::{GPUError, GPUResult};
+
+use opencl3::command_queue::CommandQueue;
+use opencl3::context::Context;
+use opencl3::device::DeviceInfo::CL_DEVICE_ENDIAN_LITTLE;
+use opencl3::kernel::ExecuteKernel;
+use opencl3::memory::CL_MEM_READ_WRITE;
+use opencl3::program::ProgramInfo::CL_PROGRAM_BINARIES;
+use opencl3::types::CL_BLOCKING;
 
 pub type BusId = u32;
 
 #[allow(non_camel_case_types)]
-pub type cl_device_id = ocl::ffi::cl_device_id;
+pub type cl_device_id = opencl3::types::cl_device_id;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Brand {
@@ -42,49 +52,15 @@ impl fmt::Display for Brand {
 }
 
 pub struct Buffer<T> {
-    buffer: ocl::Buffer<u8>,
+    buffer: opencl3::memory::Buffer<u8>,
+    length: usize,
     _phantom: std::marker::PhantomData<T>,
 }
 
 impl<T> Buffer<T> {
+    /// The number of bytes / size_of(T)
     pub fn length(&self) -> usize {
-        self.buffer.len() / std::mem::size_of::<T>()
-    }
-
-    pub fn write_from(&mut self, offset: usize, data: &[T]) -> GPUResult<()> {
-        assert!(offset + data.len() <= self.length());
-        self.buffer
-            .create_sub_buffer(
-                None,
-                offset * std::mem::size_of::<T>(),
-                data.len() * std::mem::size_of::<T>(),
-            )?
-            .write(unsafe {
-                std::slice::from_raw_parts(
-                    data.as_ptr() as *const T as *const u8,
-                    data.len() * std::mem::size_of::<T>(),
-                )
-            })
-            .enq()?;
-        Ok(())
-    }
-
-    pub fn read_into(&self, offset: usize, data: &mut [T]) -> GPUResult<()> {
-        assert!(offset + data.len() <= self.length());
-        self.buffer
-            .create_sub_buffer(
-                None,
-                offset * std::mem::size_of::<T>(),
-                data.len() * std::mem::size_of::<T>(),
-            )?
-            .read(unsafe {
-                std::slice::from_raw_parts_mut(
-                    data.as_mut_ptr() as *mut T as *mut u8,
-                    data.len() * std::mem::size_of::<T>(),
-                )
-            })
-            .enq()?;
-        Ok(())
+        self.length
     }
 }
 
@@ -94,8 +70,7 @@ pub struct Device {
     name: String,
     memory: u64,
     bus_id: Option<BusId>,
-    platform: ocl::Platform,
-    pub device: ocl::Device,
+    device: opencl3::device::Device,
 }
 
 impl Hash for Device {
@@ -123,7 +98,11 @@ impl Device {
         self.memory
     }
     pub fn is_little_endian(&self) -> GPUResult<bool> {
-        utils::is_little_endian(self.device)
+        match self.device.endian_little() {
+            Ok(0) => Ok(false),
+            Ok(_) => Ok(true),
+            Err(_) => Err(GPUError::DeviceInfoNotAvailable(CL_DEVICE_ENDIAN_LITTLE)),
+        }
     }
     pub fn bus_id(&self) -> Option<BusId> {
         self.bus_id
@@ -143,8 +122,8 @@ impl Device {
             .ok_or(GPUError::DeviceNotFound)
     }
 
-    pub fn cl_device_id(&self) -> ocl::ffi::cl_device_id {
-        self.device.as_core().as_raw()
+    pub fn cl_device_id(&self) -> cl_device_id {
+        self.device.id()
     }
 
     fn all_iter() -> impl Iterator<Item = &'static Device> {
@@ -201,9 +180,11 @@ fn get_device_by_index(index: usize) -> Option<&'static Device> {
 }
 
 pub struct Program {
+    // TODO vmx 2021-04-11: The `Context` contains the devices, use those instead of storing them again
     device: Device,
-    program: ocl::Program,
-    queue: ocl::Queue,
+    queue: CommandQueue,
+    context: Context,
+    kernels_by_name: HashMap<String, opencl3::kernel::Kernel>,
 }
 
 impl Program {
@@ -216,59 +197,72 @@ impl Program {
             let bin = std::fs::read(cached)?;
             Program::from_binary(device, bin)
         } else {
-            let context = ocl::Context::builder()
-                .platform(device.platform)
-                .devices(device.device)
-                .build()?;
-            let program = ocl::Program::builder()
-                .src(src)
-                .devices(ocl::builders::DeviceSpecifier::Single(device.device))
-                .build(&context)?;
-            let queue = ocl::Queue::new(&context, device.device, None)?;
+            let context = Context::from_device(&device.device)?;
+            let mut program = opencl3::program::Program::create_from_source(&context, src)?;
+            if let Err(build_error) = program.build(context.devices(), "") {
+                let log = program.get_build_log(context.devices()[0])?;
+                return Err(GPUError::Opencl3(build_error, Some(log)));
+            }
+            let queue = CommandQueue::create(&context, context.default_device(), 0)?;
+            let kernels = opencl3::kernel::create_program_kernels(&program)?;
+            let kernels_by_name = kernels
+                .into_iter()
+                .map(|kernel| (kernel.function_name().unwrap(), kernel))
+                .collect();
             let prog = Program {
-                program,
                 queue,
                 device,
+                context,
+                kernels_by_name,
             };
-            std::fs::write(cached, prog.to_binary()?)?;
+            let binaries = program
+                .get_binaries()
+                .map_err(|_| GPUError::ProgramInfoNotAvailable(CL_PROGRAM_BINARIES))?;
+            std::fs::write(cached, binaries[0].clone())?;
             Ok(prog)
         }
     }
     pub fn from_binary(device: Device, bin: Vec<u8>) -> GPUResult<Program> {
-        let context = ocl::Context::builder()
-            .platform(device.platform)
-            .devices(device.device)
-            .build()?;
+        let context = Context::from_device(&device.device)?;
         let bins = vec![&bin[..]];
-        let program = ocl::Program::builder()
-            .binaries(&bins)
-            .devices(ocl::builders::DeviceSpecifier::Single(device.device))
-            .build(&context)?;
-        let queue = ocl::Queue::new(&context, device.device, None)?;
+        let mut program =
+            opencl3::program::Program::create_from_binary(&context, context.devices(), &bins)?;
+        if let Err(build_error) = program.build(context.devices(), "") {
+            let log = program.get_build_log(context.devices()[0])?;
+            return Err(GPUError::Opencl3(build_error, Some(log)));
+        }
+        let queue = CommandQueue::create(&context, context.default_device(), 0)?;
+        let kernels = opencl3::kernel::create_program_kernels(&program)?;
+        let kernels_by_name = kernels
+            .into_iter()
+            .map(|kernel| (kernel.function_name().unwrap(), kernel))
+            .collect();
         Ok(Program {
             device,
-            program,
             queue,
+            context,
+            kernels_by_name,
         })
     }
-    pub fn to_binary(&self) -> GPUResult<Vec<u8>> {
-        match self.program.info(ocl::enums::ProgramInfo::Binaries)? {
-            ocl::enums::ProgramInfoResult::Binaries(bins) => Ok(bins[0].clone()),
-            _ => Err(GPUError::ProgramInfoNotAvailable(
-                ocl::enums::ProgramInfo::Binaries,
-            )),
-        }
-    }
+
     pub fn create_buffer<T>(&self, length: usize) -> GPUResult<Buffer<T>> {
         assert!(length > 0);
-        let buff = ocl::Buffer::<u8>::builder()
-            .queue(self.queue.clone())
-            .flags(ocl::MemFlags::new().read_write())
-            .len(length * std::mem::size_of::<T>())
-            .build()?;
-        buff.write(&vec![0u8]).enq()?;
+        let buff = opencl3::memory::Buffer::create(
+            &self.context,
+            CL_MEM_READ_WRITE,
+            // TODO vmx 2021-03-15: multiplying with the memsize of the type seems to be wrong.
+            // The `opencl3::memory::Buffer::create()` takes the number of elements and does
+            // internally multiply with the memsize of the given test. Though `ocl` seems to do
+            // the same thing, doing this multiplication makes the tests pass.
+            length * std::mem::size_of::<T>(),
+            ptr::null_mut(),
+        )?;
+        self.queue
+            .enqueue_write_buffer(&buff, opencl3::types::CL_BLOCKING, 0, &[0u8], &[])?;
+
         Ok(Buffer::<T> {
             buffer: buff,
+            length,
             _phantom: std::marker::PhantomData,
         })
     }
@@ -288,20 +282,76 @@ impl Program {
         }
         self.create_buffer::<T>(n)
     }
-    pub fn create_kernel(&self, name: &str, gws: usize, lws: Option<usize>) -> Kernel<'_> {
-        let mut builder = ocl::Kernel::builder();
-        builder.name(name);
-        builder.program(&self.program);
-        builder.queue(self.queue.clone());
-        builder.global_work_size([gws]);
+    pub fn create_kernel(&self, name: &str, gws: usize, lws: Option<usize>) -> GPUResult<Kernel> {
+        let kernel = self
+            .kernels_by_name
+            .get(name)
+            .ok_or_else(|| GPUError::KernelNotFound(name.to_string()))?;
+        let mut builder = ExecuteKernel::new(&kernel);
+        builder.set_global_work_size(gws);
         if let Some(lws) = lws {
-            builder.local_work_size([lws]);
+            builder.set_local_work_size(lws);
         }
-        Kernel::<'_> { builder }
+        Ok(Kernel {
+            builder,
+            queue: &self.queue,
+        })
+    }
+
+    pub fn write_from_buffer<T>(
+        &self,
+        buffer: &Buffer<T>,
+        offset: usize,
+        data: &[T],
+    ) -> GPUResult<()> {
+        assert!(
+            offset + data.len() <= buffer.length(),
+            "Buffer is too small."
+        );
+
+        let buff = buffer
+            .buffer
+            .create_sub_buffer(CL_MEM_READ_WRITE, offset, data.len())?;
+
+        let data = unsafe {
+            std::slice::from_raw_parts(
+                data.as_ptr() as *const T as *const u8,
+                data.len() * std::mem::size_of::<T>(),
+            )
+        };
+
+        self.queue
+            .enqueue_write_buffer(&buff, CL_BLOCKING, 0, &data, &[])?;
+
+        Ok(())
+    }
+
+    pub fn read_into_buffer<T>(
+        &self,
+        buffer: &Buffer<T>,
+        offset: usize,
+        data: &mut [T],
+    ) -> GPUResult<()> {
+        assert!(
+            offset + data.len() <= buffer.length(),
+            "Buffer is too small."
+        );
+        let buff = buffer
+            .buffer
+            .create_sub_buffer(CL_MEM_READ_WRITE, offset, data.len())?;
+
+        let mut data = unsafe {
+            std::slice::from_raw_parts_mut(
+                data.as_mut_ptr() as *mut T as *mut u8,
+                data.len() * std::mem::size_of::<T>(),
+            )
+        };
+        self.queue
+            .enqueue_read_buffer(&buff, CL_BLOCKING, 0, &mut data, &[])?;
+
+        Ok(())
     }
 }
-
-pub use ocl::OclPrm as Parameter;
 
 pub trait KernelArgument<'a> {
     fn push(&self, kernel: &mut Kernel<'a>);
@@ -309,13 +359,19 @@ pub trait KernelArgument<'a> {
 
 impl<'a, T> KernelArgument<'a> for &'a Buffer<T> {
     fn push(&self, kernel: &mut Kernel<'a>) {
-        kernel.builder.arg(&self.buffer);
+        kernel.builder.set_arg(&self.buffer);
     }
 }
 
-impl<T: ocl::OclPrm> KernelArgument<'_> for T {
+impl KernelArgument<'_> for i32 {
     fn push(&self, kernel: &mut Kernel) {
-        kernel.builder.arg(*self);
+        kernel.builder.set_arg(self);
+    }
+}
+
+impl KernelArgument<'_> for u32 {
+    fn push(&self, kernel: &mut Kernel) {
+        kernel.builder.set_arg(self);
     }
 }
 
@@ -336,13 +392,14 @@ impl<T> KernelArgument<'_> for LocalBuffer<T> {
     fn push(&self, kernel: &mut Kernel) {
         kernel
             .builder
-            .arg_local::<u8>(self.length * std::mem::size_of::<T>());
+            .set_arg_local_buffer::<T>(self.length * std::mem::size_of::<T>());
     }
 }
 
 #[derive(Debug)]
 pub struct Kernel<'a> {
-    builder: ocl::builders::KernelBuilder<'a>,
+    builder: ExecuteKernel<'a>,
+    queue: &'a CommandQueue,
 }
 
 impl<'a> Kernel<'a> {
@@ -350,11 +407,8 @@ impl<'a> Kernel<'a> {
         t.push(&mut self);
         self
     }
-    pub fn run(self) -> GPUResult<()> {
-        let kern = self.builder.build()?;
-        unsafe {
-            kern.enq()?;
-        }
+    pub fn run(mut self) -> GPUResult<()> {
+        self.builder.enqueue_nd_range(&self.queue)?;
         Ok(())
     }
 }
