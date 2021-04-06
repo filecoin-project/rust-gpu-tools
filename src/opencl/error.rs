@@ -1,6 +1,5 @@
-use ocl;
-
 #[derive(thiserror::Error, Debug)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum GPUError {
     #[error("Ocl Error: {0}")]
     Ocl(ocl::Error),
@@ -14,6 +13,7 @@ pub enum GPUError {
     IO(#[from] std::io::Error),
 }
 
+#[allow(clippy::upper_case_acronyms)]
 #[allow(dead_code)]
 pub type GPUResult<T> = std::result::Result<T, GPUError>;
 

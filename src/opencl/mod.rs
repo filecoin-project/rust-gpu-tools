@@ -114,7 +114,7 @@ impl Device {
         self.memory
     }
     pub fn is_little_endian(&self) -> GPUResult<bool> {
-        Ok(utils::is_little_endian(self.device)?)
+        utils::is_little_endian(self.device)
     }
     pub fn bus_id(&self) -> Option<BusId> {
         self.bus_id
@@ -151,6 +151,7 @@ impl Device {
     }
 }
 
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy)]
 pub enum GPUSelector {
     BusId(u32),
@@ -291,7 +292,7 @@ impl Program {
             } else {
                 curr -= step;
             }
-            step = step / 2;
+            step /= 2;
         }
         self.create_buffer::<T>(n)
     }
@@ -322,7 +323,7 @@ impl<'a, T> KernelArgument<'a> for &'a Buffer<T> {
 
 impl<T: ocl::OclPrm> KernelArgument<'_> for T {
     fn push(&self, kernel: &mut Kernel) {
-        kernel.builder.arg(self.clone());
+        kernel.builder.arg(*self);
     }
 }
 
