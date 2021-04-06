@@ -16,8 +16,8 @@ struct cl_amd_device_topology {
     function: u8,
 }
 
-const AMD_DEVICE_VENDOR_STRING: &'static str = "AMD";
-const NVIDIA_DEVICE_VENDOR_STRING: &'static str = "NVIDIA Corporation";
+const AMD_DEVICE_VENDOR_STRING: &str = "AMD";
+const NVIDIA_DEVICE_VENDOR_STRING: &str = "NVIDIA Corporation";
 
 pub fn is_little_endian(d: ocl::Device) -> GPUResult<bool> {
     match d.info(ocl::enums::DeviceInfo::EndianLittle)? {
@@ -91,7 +91,7 @@ lazy_static! {
 
 pub fn find_platform(platform_name: &str) -> ocl::Result<Option<&ocl::Platform>> {
     let platform = PLATFORMS.iter().find(|&p| match p.clone().name() {
-        Ok(p) => p == platform_name.to_string(),
+        Ok(p) => p == *platform_name,
         Err(_) => false,
     });
     Ok(platform)
