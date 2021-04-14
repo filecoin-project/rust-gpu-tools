@@ -1,12 +1,13 @@
 mod error;
 mod utils;
 
+use std::convert::TryInto;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
 pub use error::{GPUError, GPUResult};
 
-pub type BusId = u32;
+pub type PciId = u32;
 
 #[allow(non_camel_case_types)]
 pub type cl_device_id = ocl::ffi::cl_device_id;
@@ -88,25 +89,77 @@ impl<T> Buffer<T> {
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct DeviceUuid([u8; utils::CL_UUID_SIZE_KHR]);
+
+impl TryInto<DeviceUuid> for &str {
+    type Error = GPUError;
+
+    fn try_into(self) -> GPUResult<DeviceUuid> {
+        let res = self
+            .split('-')
+            .map(|s| hex::decode(s).map_err(|_| GPUError::Uuid(self.to_string())))
+            .collect::<GPUResult<Vec<_>>>()?;
+
+        let res = res.into_iter().flatten().collect::<Vec<u8>>();
+
+        if res.len() != utils::CL_UUID_SIZE_KHR {
+            Err(GPUError::Uuid(self.to_string()))
+        } else {
+            let mut raw = [0u8; utils::CL_UUID_SIZE_KHR];
+            raw.copy_from_slice(res.as_slice());
+            Ok(DeviceUuid(raw))
+        }
+    }
+}
+
+impl fmt::Display for DeviceUuid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use hex::encode;
+
+        // formats the uuid the same way as clinfo does, as an example:
+        // the output should looks like 46abccd6-022e-b783-572d-833f7104d05f
+        write!(
+            f,
+            "{}-{}-{}-{}-{}",
+            encode(&self.0[..4]),
+            encode(&self.0[4..6]),
+            encode(&self.0[6..8]),
+            encode(&self.0[8..10]),
+            encode(&self.0[10..])
+        )
+    }
+}
+
+impl fmt::Debug for DeviceUuid {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.to_string())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Device {
     brand: Brand,
     name: String,
     memory: u64,
-    bus_id: Option<BusId>,
     platform: ocl::Platform,
+    pci_id: Option<PciId>,
+    uuid: Option<DeviceUuid>,
     pub device: ocl::Device,
 }
 
 impl Hash for Device {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.bus_id.hash(state);
+        // hash both properties because a device might have set only one
+        self.uuid.hash(state);
+        self.pci_id.hash(state);
     }
 }
 
 impl PartialEq for Device {
     fn eq(&self, other: &Self) -> bool {
-        self.bus_id == other.bus_id
+        // A device might have set only one of the properties, hence compare both
+        self.uuid == other.uuid && self.pci_id == other.pci_id
     }
 }
 
@@ -125,8 +178,11 @@ impl Device {
     pub fn is_little_endian(&self) -> GPUResult<bool> {
         utils::is_little_endian(self.device)
     }
-    pub fn bus_id(&self) -> Option<BusId> {
-        self.bus_id
+    pub fn pci_id(&self) -> Option<PciId> {
+        self.pci_id
+    }
+    pub fn uuid(&self) -> Option<DeviceUuid> {
+        self.uuid
     }
 
     /// Return all available GPU devices of supported brands.
@@ -134,10 +190,19 @@ impl Device {
         Self::all_iter().collect()
     }
 
-    pub fn by_bus_id(bus_id: BusId) -> GPUResult<&'static Device> {
-        Self::all_iter()
-            .find(|d| match d.bus_id {
-                Some(id) => bus_id == id,
+    pub fn by_pci_id(pci_id: PciId) -> GPUResult<&'static Device> {
+        Device::all_iter()
+            .find(|d| match d.pci_id {
+                Some(id) => pci_id == id,
+                None => false,
+            })
+            .ok_or(GPUError::DeviceNotFound)
+    }
+
+    pub fn by_uuid(uuid: &DeviceUuid) -> GPUResult<&'static Device> {
+        Device::all_iter()
+            .find(|d| match d.uuid {
+                Some(ref id) => id == uuid,
                 None => false,
             })
             .ok_or(GPUError::DeviceNotFound)
@@ -152,47 +217,38 @@ impl Device {
     }
 }
 
-#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy)]
 pub enum GPUSelector {
-    BusId(u32),
+    Uuid(DeviceUuid),
+    PciId(u32),
     Index(usize),
 }
 
 impl GPUSelector {
-    pub fn get_bus_id(&self) -> Option<u32> {
-        match self {
-            GPUSelector::BusId(bus_id) => Some(*bus_id),
-            GPUSelector::Index(index) => get_device_bus_id_by_index(*index),
-        }
+    pub fn get_uuid(&self) -> Option<DeviceUuid> {
+        self.get_device().and_then(|dev| dev.uuid)
+    }
+
+    pub fn get_pci_id(&self) -> Option<u32> {
+        self.get_device().and_then(|dev| dev.pci_id)
     }
 
     pub fn get_device(&self) -> Option<&'static Device> {
         match self {
-            GPUSelector::BusId(bus_id) => Device::by_bus_id(*bus_id).ok(),
+            GPUSelector::Uuid(uuid) => Device::all_iter().find(|d| d.uuid == Some(*uuid)),
+            GPUSelector::PciId(pci_id) => Device::all_iter().find(|d| d.pci_id == Some(*pci_id)),
             GPUSelector::Index(index) => get_device_by_index(*index),
         }
     }
 
     pub fn get_key(&self) -> String {
         match self {
-            GPUSelector::BusId(id) => format!("BusID: {}", id),
+            GPUSelector::Uuid(uuid) => format!("Uuid: {}", uuid),
+            GPUSelector::PciId(id) => format!("PciId: {}", id),
             GPUSelector::Index(idx) => {
-                if let Some(id) = self.get_bus_id() {
-                    format!("BusID: {}", id)
-                } else {
-                    format!("Index: {}", idx)
-                }
+                format!("Index: {}", idx)
             }
         }
-    }
-}
-
-fn get_device_bus_id_by_index(index: usize) -> Option<BusId> {
-    if let Some(device) = get_device_by_index(index) {
-        device.bus_id
-    } else {
-        None
     }
 }
 
@@ -370,13 +426,30 @@ macro_rules! call_kernel {
 
 #[cfg(test)]
 mod test {
-    use super::Device;
+    use super::{Device, DeviceUuid};
+    use std::convert::TryInto;
 
     #[test]
     fn test_device_all() {
-        for _ in 0..10 {
-            let devices = Device::all();
-            dbg!(&devices.len());
-        }
+        let devices = Device::all();
+        dbg!(&devices.len());
+        println!("{:?}", devices);
+    }
+
+    #[test]
+    fn test_uuid() {
+        let test_uuid = "46abccd6-022e-b783-572d-833f7104d05f";
+        let uuid: DeviceUuid = test_uuid.try_into().unwrap();
+        assert_eq!(test_uuid, &uuid.to_string());
+
+        // test wrong length uuid
+        let bad_uuid = "46abccd6-022e-b783-572-833f7104d05f";
+        let uuid: Result<DeviceUuid, _> = bad_uuid.try_into();
+        assert!(uuid.is_err());
+
+        // test invalid hex character
+        let bad_uuid = "46abccd6-022e-b783-572d-833f7104d05h";
+        let uuid: Result<DeviceUuid, _> = bad_uuid.try_into();
+        assert!(uuid.is_err());
     }
 }

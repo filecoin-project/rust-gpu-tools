@@ -11,6 +11,8 @@ pub enum GPUError {
     ProgramInfoNotAvailable(ocl::enums::ProgramInfo),
     #[error("IO Error: {0}")]
     IO(#[from] std::io::Error),
+    #[error("Cannot parse UUID, expected hex-encoded string formated as aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee, got {0}.")]
+    Uuid(String),
 }
 
 #[allow(clippy::upper_case_acronyms)]

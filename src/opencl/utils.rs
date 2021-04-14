@@ -5,7 +5,7 @@ use lazy_static::lazy_static;
 use log::{debug, warn};
 use sha2::{Digest, Sha256};
 
-use super::{Brand, Device, GPUError, GPUResult};
+use super::{Brand, Device, DeviceUuid, GPUError, GPUResult};
 
 #[repr(C)]
 #[derive(Debug, Clone, Default)]
@@ -17,8 +17,13 @@ struct cl_amd_device_topology {
     function: u8,
 }
 
-const AMD_DEVICE_VENDOR_STRING: &str = "AMD";
-const NVIDIA_DEVICE_VENDOR_STRING: &str = "NVIDIA Corporation";
+const AMD_DEVICE_VENDOR_STRING: &'static str = "AMD";
+const NVIDIA_DEVICE_VENDOR_STRING: &'static str = "NVIDIA Corporation";
+
+// constants defined as part of the opencl spec
+// https://github.com/KhronosGroup/OpenCL-Headers/blob/master/CL/cl_ext.h#L687
+const CL_DEVICE_UUID_KHR: u32 = 0x106A;
+pub(crate) const CL_UUID_SIZE_KHR: usize = 16;
 
 pub fn is_little_endian(d: ocl::Device) -> GPUResult<bool> {
     match d.info(ocl::enums::DeviceInfo::EndianLittle)? {
@@ -29,26 +34,36 @@ pub fn is_little_endian(d: ocl::Device) -> GPUResult<bool> {
     }
 }
 
-pub fn get_bus_id(d: ocl::Device) -> ocl::Result<u32> {
+pub fn get_device_uuid(d: ocl::Device) -> ocl::Result<DeviceUuid> {
+    let result = d.info_raw(CL_DEVICE_UUID_KHR)?;
+    assert_eq!(result.len(), CL_UUID_SIZE_KHR);
+    let mut raw = [0u8; CL_UUID_SIZE_KHR];
+    raw.copy_from_slice(result.as_slice());
+    Ok(DeviceUuid(raw))
+}
+
+pub fn get_pci_id(d: ocl::Device) -> ocl::Result<u32> {
     let vendor = d.vendor()?;
     match vendor.as_str() {
-        AMD_DEVICE_VENDOR_STRING => get_amd_bus_id(d),
-        NVIDIA_DEVICE_VENDOR_STRING => get_nvidia_bus_id(d),
+        AMD_DEVICE_VENDOR_STRING => get_amd_pci_id(d),
+        NVIDIA_DEVICE_VENDOR_STRING => get_nvidia_pci_id(d),
         _ => Err(ocl::Error::from(format!(
-            "cannot get bus ID for device with vendor {} ",
+            "cannot get pciId for device with vendor {} ",
             vendor
         ))),
     }
 }
 
-pub fn get_nvidia_bus_id(d: ocl::Device) -> ocl::Result<u32> {
-    const CL_DEVICE_PCI_BUS_ID_NV: u32 = 0x4008;
-    let result = d.info_raw(CL_DEVICE_PCI_BUS_ID_NV)?;
+fn get_nvidia_pci_id(d: ocl::Device) -> ocl::Result<u32> {
+    const CL_DEVICE_PCI_SLOT_ID_NV: u32 = 0x4009;
+
+    let result = d.info_raw(CL_DEVICE_PCI_SLOT_ID_NV)?;
     Ok(u32::from_le_bytes(result[..].try_into().unwrap()))
 }
 
-pub fn get_amd_bus_id(d: ocl::Device) -> ocl::Result<u32> {
+fn get_amd_pci_id(d: ocl::Device) -> ocl::Result<u32> {
     const CL_DEVICE_TOPOLOGY_AMD: u32 = 0x4037;
+
     let result = d.info_raw(CL_DEVICE_TOPOLOGY_AMD)?;
     let size = std::mem::size_of::<cl_amd_device_topology>();
     assert_eq!(result.len(), size);
@@ -57,7 +72,10 @@ pub fn get_amd_bus_id(d: ocl::Device) -> ocl::Result<u32> {
         std::slice::from_raw_parts_mut(&mut topo as *mut cl_amd_device_topology as *mut u8, size)
             .copy_from_slice(&result);
     }
-    Ok(topo.bus as u32)
+    let device = topo.device as u32;
+    let bus = topo.bus as u32;
+    let function = topo.function as u32;
+    Ok((device << 16) | (bus << 8) | function)
 }
 
 pub fn cache_path(device: &Device, cl_source: &str) -> std::io::Result<std::path::PathBuf> {
@@ -66,14 +84,12 @@ pub fn cache_path(device: &Device, cl_source: &str) -> std::io::Result<std::path
         std::fs::create_dir(&path)?;
     }
     let mut hasher = Sha256::new();
-    // If there are multiple devices with the same name and neither has a Bus-Id,
-    // then there will be a collision. Bus-Id can be missing in the case of an Apple
-    // GPU. For now, we assume that in the unlikely event of a collision, the same
-    // cache can be used.
-    // TODO: We might be able to get around this issue by using cl_vendor_id instead of Bus-Id.
     hasher.input(device.name.as_bytes());
-    if let Some(bus_id) = device.bus_id {
-        hasher.input(bus_id.to_be_bytes());
+    if let Some(uuid) = device.uuid {
+        hasher.input(uuid.to_string());
+    }
+    if let Some(pci) = device.pci_id {
+        hasher.input(pci.to_le_bytes());
     }
     hasher.input(cl_source.as_bytes());
     let mut digest = String::new();
@@ -134,7 +150,8 @@ fn build_device_list() -> Vec<Device> {
                                 brand,
                                 name: d.name()?,
                                 memory: get_memory(d)?,
-                                bus_id: get_bus_id(d).ok(),
+                                uuid: get_device_uuid(d).ok(),
+                                pci_id: get_pci_id(d).ok(),
                                 platform: *platform,
                                 device: d,
                             })
