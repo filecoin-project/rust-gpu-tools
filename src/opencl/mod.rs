@@ -351,6 +351,18 @@ impl Program {
 
         Ok(())
     }
+
+    /// Run some code in the context of the program
+    ///
+    /// On CUDA it sets the correct contexts and synchronizes the stream before returning.
+    /// On OpenCL it's only executing the closure without any other side-effects.
+    pub fn run<F, R, E>(&self, fun: F) -> Result<R, E>
+    where
+        F: FnOnce() -> Result<R, E>,
+        E: From<GPUError>,
+    {
+        fun()
+    }
 }
 
 pub trait KernelArgument<'a> {
