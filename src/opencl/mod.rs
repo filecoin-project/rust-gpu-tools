@@ -282,16 +282,14 @@ impl Program {
         }
         self.create_buffer::<T>(n)
     }
-    pub fn create_kernel(&self, name: &str, gws: usize, lws: Option<usize>) -> GPUResult<Kernel> {
+    pub fn create_kernel(&self, name: &str, gws: usize, lws: usize) -> GPUResult<Kernel> {
         let kernel = self
             .kernels_by_name
             .get(name)
             .ok_or_else(|| GPUError::KernelNotFound(name.to_string()))?;
         let mut builder = ExecuteKernel::new(&kernel);
         builder.set_global_work_size(gws);
-        if let Some(lws) = lws {
-            builder.set_local_work_size(lws);
-        }
+        builder.set_local_work_size(lws);
         Ok(Kernel {
             builder,
             queue: &self.queue,
