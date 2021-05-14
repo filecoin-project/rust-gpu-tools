@@ -1,9 +1,11 @@
 use std::convert::TryInto;
+use std::fmt::Write;
 
 use lazy_static::lazy_static;
 use log::{debug, warn};
+use sha2::{Digest, Sha256};
 
-use super::*;
+use super::{Brand, Device, GPUError, GPUResult};
 
 #[repr(C)]
 #[derive(Debug, Clone, Default)]
@@ -83,6 +85,15 @@ pub fn cache_path(device: &Device, cl_source: &str) -> std::io::Result<std::path
     Ok(path.join(digest))
 }
 
+fn get_memory(d: ocl::Device) -> GPUResult<u64> {
+    match d.info(ocl::enums::DeviceInfo::GlobalMemSize)? {
+        ocl::enums::DeviceInfoResult::GlobalMemSize(sz) => Ok(sz),
+        _ => Err(GPUError::DeviceInfoNotAvailable(
+            ocl::enums::DeviceInfo::GlobalMemSize,
+        )),
+    }
+}
+
 lazy_static! {
     pub(crate) static ref DEVICES: Vec<Device> = build_device_list();
 }
@@ -123,7 +134,7 @@ fn build_device_list() -> Vec<Device> {
                                 brand,
                                 name: d.name()?,
                                 memory: get_memory(d)?,
-                                bus_id: utils::get_bus_id(d).ok(),
+                                bus_id: get_bus_id(d).ok(),
                                 platform: *platform,
                                 device: d,
                             })
