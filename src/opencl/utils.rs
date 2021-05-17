@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::convert::TryInto;
 
 use lazy_static::lazy_static;
@@ -85,71 +84,63 @@ pub fn cache_path(device: &Device, cl_source: &str) -> std::io::Result<std::path
 }
 
 lazy_static! {
-    pub static ref PLATFORMS: Vec<ocl::Platform> = ocl::Platform::list().unwrap_or_default();
-    pub static ref DEVICES: HashMap<Brand, Vec<Device>> = build_device_list();
+    pub(crate) static ref DEVICES: Vec<Device> = build_device_list();
 }
 
-pub fn find_platform(platform_name: &str) -> ocl::Result<Option<&ocl::Platform>> {
-    let platform = PLATFORMS.iter().find(|&p| match p.clone().name() {
-        Ok(p) => p == *platform_name,
-        Err(_) => false,
-    });
-    Ok(platform)
-}
+fn build_device_list() -> Vec<Device> {
+    let mut all_devices = Vec::new();
+    let platforms: Vec<ocl::Platform> = ocl::Platform::list().unwrap_or_default();
 
-fn build_device_list() -> HashMap<Brand, Vec<Device>> {
-    let brands = Brand::all();
-    let mut map = HashMap::with_capacity(brands.len());
-
-    for brand in brands.into_iter() {
-        match find_platform(brand.platform_name()) {
-            Ok(Some(platform)) => {
-                let devices = ocl::Device::list(platform, Some(ocl::core::DeviceType::GPU))
-                    .map_err(Into::into)
-                    .and_then(|devices| {
-                        devices
-                            .into_iter()
-                            .filter(|d| {
-                                if let Ok(vendor) = d.vendor() {
-                                    match vendor.as_str() {
-                                        // Only use devices from the accepted vendors ...
-                                        AMD_DEVICE_VENDOR_STRING | NVIDIA_DEVICE_VENDOR_STRING => {
-                                            // ... which are available.
-                                            return d.is_available().unwrap_or(false);
-                                        }
-                                        _ => (),
-                                    }
-                                }
-                                false
-                            })
-                            .map(|d| -> GPUResult<_> {
-                                Ok(Device {
-                                    brand,
-                                    name: d.name()?,
-                                    memory: get_memory(d)?,
-                                    bus_id: utils::get_bus_id(d).ok(),
-                                    platform: *platform,
-                                    device: d,
-                                })
-                            })
-                            .collect::<GPUResult<Vec<_>>>()
-                    });
-                match devices {
-                    Ok(devices) => {
-                        map.insert(brand, devices);
-                    }
-                    Err(err) => {
-                        warn!("Unable to retrieve devices for {:?}: {:?}", brand, err);
-                    }
-                }
+    for platform in platforms.iter() {
+        let platform_name = match platform.name() {
+            Ok(pn) => pn,
+            Err(error) => {
+                warn!("Cannot get platform name: {:?}", error);
+                continue;
             }
-            Ok(None) => {}
-            Err(err) => {
-                warn!("Platform issue for brand {:?}: {:?}", brand, err);
+        };
+        if let Some(brand) = Brand::by_name(&platform_name) {
+            let devices = ocl::Device::list(platform, Some(ocl::core::DeviceType::GPU))
+                .map_err(Into::into)
+                .and_then(|devices| {
+                    devices
+                        .into_iter()
+                        .filter(|d| {
+                            if let Ok(vendor) = d.vendor() {
+                                match vendor.as_str() {
+                                    // Only use devices from the accepted vendors ...
+                                    AMD_DEVICE_VENDOR_STRING | NVIDIA_DEVICE_VENDOR_STRING => {
+                                        // ... which are available.
+                                        return d.is_available().unwrap_or(false);
+                                    }
+                                    _ => (),
+                                }
+                            }
+                            false
+                        })
+                        .map(|d| -> GPUResult<_> {
+                            Ok(Device {
+                                brand,
+                                name: d.name()?,
+                                memory: get_memory(d)?,
+                                bus_id: utils::get_bus_id(d).ok(),
+                                platform: *platform,
+                                device: d,
+                            })
+                        })
+                        .collect::<GPUResult<Vec<_>>>()
+                });
+            match devices {
+                Ok(mut devices) => {
+                    all_devices.append(&mut devices);
+                }
+                Err(err) => {
+                    warn!("Unable to retrieve devices for {:?}: {:?}", brand, err);
+                }
             }
         }
     }
 
-    debug!("loaded devices: {:?}", map);
-    map
+    debug!("loaded devices: {:?}", all_devices);
+    all_devices
 }
