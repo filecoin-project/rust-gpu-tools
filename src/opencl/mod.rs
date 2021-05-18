@@ -4,7 +4,7 @@ mod utils;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
-use error::{GPUError, GPUResult};
+pub use error::{GPUError, GPUResult};
 
 pub type BusId = u32;
 
