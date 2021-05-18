@@ -1,10 +1,10 @@
 mod error;
 mod utils;
 
-pub use error::*;
-use sha2::{Digest, Sha256};
-use std::fmt::{self, Write};
+use std::fmt;
 use std::hash::{Hash, Hasher};
+
+use error::{GPUError, GPUResult};
 
 pub type BusId = u32;
 
@@ -200,15 +200,6 @@ fn get_device_by_index(index: usize) -> Option<&'static Device> {
     Device::all_iter().nth(index)
 }
 
-pub fn get_memory(d: ocl::Device) -> GPUResult<u64> {
-    match d.info(ocl::enums::DeviceInfo::GlobalMemSize)? {
-        ocl::enums::DeviceInfoResult::GlobalMemSize(sz) => Ok(sz),
-        _ => Err(GPUError::DeviceInfoNotAvailable(
-            ocl::enums::DeviceInfo::GlobalMemSize,
-        )),
-    }
-}
-
 pub struct Program {
     device: Device,
     program: ocl::Program,
@@ -379,7 +370,7 @@ macro_rules! call_kernel {
 
 #[cfg(test)]
 mod test {
-    use super::*;
+    use super::Device;
 
     #[test]
     fn test_device_all() {
