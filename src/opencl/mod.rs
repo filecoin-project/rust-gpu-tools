@@ -53,9 +53,8 @@ impl fmt::Display for Brand {
 }
 
 pub struct Buffer<T> {
-    buffer: opencl3::memory::Buffer<u8>,
+    buffer: opencl3::memory::Buffer<T>,
     length: usize,
-    _phantom: std::marker::PhantomData<T>,
 }
 
 #[derive(Debug, Clone)]
@@ -251,20 +250,13 @@ impl Program {
         let buff = opencl3::memory::Buffer::create(
             &self.context,
             CL_MEM_READ_WRITE,
-            // TODO vmx 2021-03-15: multiplying with the memsize of the type seems to be wrong.
-            // The `opencl3::memory::Buffer::create()` takes the number of elements and does
-            // internally multiply with the memsize of the given test. Though `ocl` seems to do
-            // the same thing, doing this multiplication makes the tests pass.
-            length * std::mem::size_of::<T>(),
+            length,
             ptr::null_mut(),
         )?;
-        self.queue
-            .enqueue_write_buffer(&buff, opencl3::types::CL_BLOCKING, 0, &[0u8], &[])?;
 
         Ok(Buffer::<T> {
             buffer: buff,
             length,
-            _phantom: std::marker::PhantomData,
         })
     }
 
@@ -294,15 +286,8 @@ impl Program {
             .buffer
             .create_sub_buffer(CL_MEM_READ_WRITE, offset, data.len())?;
 
-        let data = unsafe {
-            std::slice::from_raw_parts(
-                data.as_ptr() as *const T as *const u8,
-                data.len() * std::mem::size_of::<T>(),
-            )
-        };
-
         self.queue
-            .enqueue_write_buffer(&buff, CL_BLOCKING, 0, &data, &[])?;
+            .enqueue_write_buffer(&buff, CL_BLOCKING, 0, data, &[])?;
 
         Ok(())
     }
@@ -318,14 +303,8 @@ impl Program {
             .buffer
             .create_sub_buffer(CL_MEM_READ_WRITE, offset, data.len())?;
 
-        let mut data = unsafe {
-            std::slice::from_raw_parts_mut(
-                data.as_mut_ptr() as *mut T as *mut u8,
-                data.len() * std::mem::size_of::<T>(),
-            )
-        };
         self.queue
-            .enqueue_read_buffer(&buff, CL_BLOCKING, 0, &mut data, &[])?;
+            .enqueue_read_buffer(&buff, CL_BLOCKING, 0, data, &[])?;
 
         Ok(())
     }
