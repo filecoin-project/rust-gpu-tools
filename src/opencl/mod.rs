@@ -1,7 +1,7 @@
 mod error;
 mod utils;
 
-use std::convert::TryInto;
+use std::convert::TryFrom;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
@@ -92,24 +92,32 @@ impl<T> Buffer<T> {
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct DeviceUuid([u8; utils::CL_UUID_SIZE_KHR]);
 
-impl TryInto<DeviceUuid> for &str {
+impl TryFrom<&str> for DeviceUuid {
     type Error = GPUError;
 
-    fn try_into(self) -> GPUResult<DeviceUuid> {
-        let res = self
+    fn try_from(value: &str) -> GPUResult<DeviceUuid> {
+        let res = value
             .split('-')
-            .map(|s| hex::decode(s).map_err(|_| GPUError::Uuid(self.to_string())))
+            .map(|s| hex::decode(s).map_err(|_| GPUError::Uuid(value.to_string())))
             .collect::<GPUResult<Vec<_>>>()?;
 
         let res = res.into_iter().flatten().collect::<Vec<u8>>();
 
         if res.len() != utils::CL_UUID_SIZE_KHR {
-            Err(GPUError::Uuid(self.to_string()))
+            Err(GPUError::Uuid(value.to_string()))
         } else {
             let mut raw = [0u8; utils::CL_UUID_SIZE_KHR];
             raw.copy_from_slice(res.as_slice());
             Ok(DeviceUuid(raw))
         }
+    }
+}
+
+impl TryFrom<String> for DeviceUuid {
+    type Error = GPUError;
+
+    fn try_from(value: String) -> GPUResult<DeviceUuid> {
+        DeviceUuid::try_from(value.as_ref())
     }
 }
 
@@ -427,7 +435,7 @@ macro_rules! call_kernel {
 #[cfg(test)]
 mod test {
     use super::{Device, DeviceUuid};
-    use std::convert::TryInto;
+    use std::convert::TryFrom;
 
     #[test]
     fn test_device_all() {
@@ -439,17 +447,17 @@ mod test {
     #[test]
     fn test_uuid() {
         let test_uuid = "46abccd6-022e-b783-572d-833f7104d05f";
-        let uuid: DeviceUuid = test_uuid.try_into().unwrap();
+        let uuid = DeviceUuid::try_from(test_uuid).unwrap();
         assert_eq!(test_uuid, &uuid.to_string());
 
         // test wrong length uuid
         let bad_uuid = "46abccd6-022e-b783-572-833f7104d05f";
-        let uuid: Result<DeviceUuid, _> = bad_uuid.try_into();
+        let uuid = DeviceUuid::try_from(bad_uuid);
         assert!(uuid.is_err());
 
         // test invalid hex character
         let bad_uuid = "46abccd6-022e-b783-572d-833f7104d05h";
-        let uuid: Result<DeviceUuid, _> = bad_uuid.try_into();
+        let uuid = DeviceUuid::try_from(bad_uuid);
         assert!(uuid.is_err());
     }
 }
