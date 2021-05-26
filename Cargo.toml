@@ -18,3 +18,8 @@ thiserror = "1.0.10"
 lazy_static = "1.2"
 log = "0.4.11"
 hex = "0.4.3"
+serde = { version = "1.0.126", optional = true}
+
+[features]
+default = []
+serde_support = ["serde/derive"]

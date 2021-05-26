@@ -89,6 +89,10 @@ impl<T> Buffer<T> {
     }
 }
 
+#[cfg_attr(
+    feature = "serde_support",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct DeviceUuid([u8; utils::CL_UUID_SIZE_KHR]);
 
@@ -225,7 +229,11 @@ impl Device {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[cfg_attr(
+    feature = "serde_support",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GPUSelector {
     Uuid(DeviceUuid),
     PciId(u32),
