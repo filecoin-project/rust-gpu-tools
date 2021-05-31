@@ -58,13 +58,6 @@ pub struct Buffer<T> {
     _phantom: std::marker::PhantomData<T>,
 }
 
-impl<T> Buffer<T> {
-    /// The number of bytes / size_of(T)
-    pub fn length(&self) -> usize {
-        self.length
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Device {
     brand: Brand,
@@ -275,21 +268,6 @@ impl Program {
         })
     }
 
-    pub fn create_buffer_flexible<T>(&self, max_length: usize) -> GPUResult<Buffer<T>> {
-        let mut curr = max_length;
-        let mut step = max_length / 2;
-        let mut n = 1;
-        while step > 0 && n < max_length {
-            if self.create_buffer::<T>(curr).is_ok() {
-                n = curr;
-                curr = std::cmp::min(curr + step, max_length);
-            } else {
-                curr -= step;
-            }
-            step /= 2;
-        }
-        self.create_buffer::<T>(n)
-    }
     pub fn create_kernel(&self, name: &str, gws: usize, lws: usize) -> GPUResult<Kernel> {
         let kernel = self
             .kernels_by_name
@@ -310,10 +288,7 @@ impl Program {
         offset: usize,
         data: &[T],
     ) -> GPUResult<()> {
-        assert!(
-            offset + data.len() <= buffer.length(),
-            "Buffer is too small."
-        );
+        assert!(offset + data.len() <= buffer.length, "Buffer is too small.");
 
         let buff = buffer
             .buffer
@@ -338,10 +313,7 @@ impl Program {
         offset: usize,
         data: &mut [T],
     ) -> GPUResult<()> {
-        assert!(
-            offset + data.len() <= buffer.length(),
-            "Buffer is too small."
-        );
+        assert!(offset + data.len() <= buffer.length, "Buffer is too small.");
         let buff = buffer
             .buffer
             .create_sub_buffer(CL_MEM_READ_WRITE, offset, data.len())?;
@@ -429,15 +401,6 @@ impl<'a> Kernel<'a> {
         self.builder.enqueue_nd_range(&self.queue)?;
         Ok(())
     }
-}
-
-#[macro_export]
-macro_rules! call_kernel {
-    ($kernel:expr, $($arg:expr),*) => {{
-        $kernel
-        $(.arg($arg))*
-        .run()
-    }};
 }
 
 #[cfg(test)]

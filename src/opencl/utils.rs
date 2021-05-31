@@ -10,7 +10,7 @@ use super::{Brand, Device, GPUError, GPUResult};
 const AMD_DEVICE_VENDOR_STRING: &str = "AMD";
 const NVIDIA_DEVICE_VENDOR_STRING: &str = "NVIDIA Corporation";
 
-pub fn get_bus_id(d: &opencl3::device::Device) -> Result<u32, GPUError> {
+fn get_bus_id(d: &opencl3::device::Device) -> Result<u32, GPUError> {
     let vendor = d.vendor()?;
     match vendor.as_str() {
         AMD_DEVICE_VENDOR_STRING => d.pci_bus_id_amd().map_err(Into::into),
@@ -44,7 +44,7 @@ pub fn cache_path(device: &Device, cl_source: &str) -> std::io::Result<std::path
     Ok(path.join(digest))
 }
 
-pub fn get_memory(d: &opencl3::device::Device) -> GPUResult<u64> {
+fn get_memory(d: &opencl3::device::Device) -> GPUResult<u64> {
     d.global_mem_size()
         .map_err(|_| GPUError::DeviceInfoNotAvailable(CL_DEVICE_GLOBAL_MEM_SIZE))
 }
