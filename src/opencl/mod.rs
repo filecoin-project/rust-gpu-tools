@@ -11,6 +11,7 @@ pub use error::{GPUError, GPUResult};
 use opencl3::command_queue::CommandQueue;
 use opencl3::context::Context;
 use opencl3::device::DeviceInfo::CL_DEVICE_ENDIAN_LITTLE;
+use opencl3::error_codes::ClError;
 use opencl3::kernel::ExecuteKernel;
 use opencl3::memory::CL_MEM_READ_WRITE;
 use opencl3::program::ProgramInfo::CL_PROGRAM_BINARIES;
@@ -207,8 +208,11 @@ impl Program {
             let kernels = opencl3::kernel::create_program_kernels(&program)?;
             let kernels_by_name = kernels
                 .into_iter()
-                .map(|kernel| (kernel.function_name().unwrap(), kernel))
-                .collect();
+                .map(|kernel| {
+                    let name = kernel.function_name()?;
+                    Ok((name, kernel))
+                })
+                .collect::<Result<_, ClError>>()?;
             let prog = Program {
                 device_name: device.name(),
                 queue,
@@ -236,8 +240,11 @@ impl Program {
         let kernels = opencl3::kernel::create_program_kernels(&program)?;
         let kernels_by_name = kernels
             .into_iter()
-            .map(|kernel| (kernel.function_name().unwrap(), kernel))
-            .collect();
+            .map(|kernel| {
+                let name = kernel.function_name()?;
+                Ok((name, kernel))
+            })
+            .collect::<Result<_, ClError>>()?;
         Ok(Program {
             device_name: device.name(),
             queue,
