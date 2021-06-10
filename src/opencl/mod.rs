@@ -233,7 +233,7 @@ impl Device {
     feature = "serde_support",
     derive(serde::Serialize, serde::Deserialize)
 )]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GPUSelector {
     Uuid(DeviceUuid),
     PciId(u32),
