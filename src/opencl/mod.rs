@@ -5,26 +5,155 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::mem;
 use std::ptr;
 
 pub use error::{GPUError, GPUResult};
 
 use opencl3::command_queue::CommandQueue;
 use opencl3::context::Context;
-use opencl3::device::DeviceInfo::CL_DEVICE_ENDIAN_LITTLE;
+use opencl3::device::{DeviceInfo::CL_DEVICE_ENDIAN_LITTLE, CL_UUID_SIZE_KHR};
 use opencl3::error_codes::ClError;
 use opencl3::kernel::ExecuteKernel;
 use opencl3::memory::CL_MEM_READ_WRITE;
 use opencl3::program::ProgramInfo::CL_PROGRAM_BINARIES;
 use opencl3::types::CL_BLOCKING;
 
-pub type BusId = u32;
-
 const AMD_DEVICE_VENDOR_STRING: &str = "AMD";
 const NVIDIA_DEVICE_VENDOR_STRING: &str = "NVIDIA Corporation";
 
 #[allow(non_camel_case_types)]
 pub type cl_device_id = opencl3::types::cl_device_id;
+
+// The PCI-ID is the combination of the PCI Bus ID and PCI Device ID.
+///
+/// It is the first two identifiers of e.g. `lspci`:
+///
+/// ```ignore
+///     4e:00.0 VGA compatible controller
+///     || └└-- Device ID
+///     └└-- Bus ID
+/// ```
+#[derive(Debug, Copy, Clone, PartialEq, Hash)]
+pub struct PciId(u16);
+
+impl From<u16> for PciId {
+    fn from(id: u16) -> Self {
+        Self(id)
+    }
+}
+
+impl From<PciId> for u16 {
+    fn from(id: PciId) -> Self {
+        id.0
+    }
+}
+
+/// Converts a PCI-ID formatted as Bus-ID:Device-ID, e.g. `e3:00`.
+impl TryFrom<&str> for PciId {
+    type Error = GPUError;
+
+    fn try_from(pci_id: &str) -> GPUResult<Self> {
+        let mut bytes = [0; mem::size_of::<u16>()];
+        hex::decode_to_slice(pci_id.replace(":", ""), &mut bytes).map_err(|_| {
+            GPUError::InvalidId(format!(
+                "Cannot parse PCI ID, expected hex-encoded string formated as aa:bb, got {0}.",
+                pci_id
+            ))
+        })?;
+        let parsed = u16::from_be_bytes(bytes);
+        Ok(Self(parsed))
+    }
+}
+
+/// Formats the PCI-ID like `lspci`, Bus-ID:Device-ID, e.g. `e3:00`.
+impl fmt::Display for PciId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bytes = u16::to_be_bytes(self.0);
+        write!(f, "{:02x}:{:02x}", bytes[0], bytes[1])
+    }
+}
+
+/// A unique identifier based on UUID of the device.
+#[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
+pub struct DeviceUuid([u8; CL_UUID_SIZE_KHR]);
+
+impl From<[u8; CL_UUID_SIZE_KHR]> for DeviceUuid {
+    fn from(uuid: [u8; CL_UUID_SIZE_KHR]) -> Self {
+        Self(uuid)
+    }
+}
+
+impl From<DeviceUuid> for [u8; CL_UUID_SIZE_KHR] {
+    fn from(uuid: DeviceUuid) -> Self {
+        uuid.0
+    }
+}
+
+/// Converts a UUID formatted as aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee,
+/// e.g. 46abccd6-022e-b783-572d-833f7104d05f
+impl TryFrom<&str> for DeviceUuid {
+    type Error = GPUError;
+
+    fn try_from(uuid: &str) -> GPUResult<Self> {
+        let mut bytes = [0; CL_UUID_SIZE_KHR];
+        hex::decode_to_slice(uuid.replace("-", ""), &mut bytes)
+            .map_err(|_| {
+                GPUError::InvalidId(format!("Cannot parse UUID, expected hex-encoded string formated as aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee, got {0}.", uuid))
+            })?;
+        Ok(Self(bytes))
+    }
+}
+
+/// Formats the UUID the same way as `clinfo` does, as an example:
+/// the output should looks like 46abccd6-022e-b783-572d-833f7104d05f
+impl fmt::Display for DeviceUuid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}-{}-{}-{}-{}",
+            hex::encode(&self.0[..4]),
+            hex::encode(&self.0[4..6]),
+            hex::encode(&self.0[6..8]),
+            hex::encode(&self.0[8..10]),
+            hex::encode(&self.0[10..])
+        )
+    }
+}
+
+impl fmt::Debug for DeviceUuid {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.to_string())
+    }
+}
+
+/// Unique identifier that can either be a PCI ID or a UUID.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum UniqueId {
+    PciId(PciId),
+    Uuid(DeviceUuid),
+}
+
+/// If the string contains a dash, it's interpreted as UUID, else it's interpreted as PCI ID.
+impl TryFrom<&str> for UniqueId {
+    type Error = GPUError;
+
+    fn try_from(unique_id: &str) -> GPUResult<Self> {
+        Ok(match unique_id.contains('-') {
+            true => Self::Uuid(DeviceUuid::try_from(unique_id)?),
+            false => Self::PciId(PciId::try_from(unique_id)?),
+        })
+    }
+}
+
+impl fmt::Display for UniqueId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PciId(id) => id.fmt(f),
+            Self::Uuid(id) => id.fmt(f),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Vendor {
@@ -64,19 +193,21 @@ pub struct Device {
     vendor: Vendor,
     name: String,
     memory: u64,
-    bus_id: Option<BusId>,
+    pci_id: PciId,
+    uuid: Option<DeviceUuid>,
     device: opencl3::device::Device,
 }
 
 impl Hash for Device {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.bus_id.hash(state);
+        self.pci_id.hash(state);
+        self.uuid.hash(state);
     }
 }
 
 impl PartialEq for Device {
     fn eq(&self, other: &Self) -> bool {
-        self.bus_id == other.bus_id
+        self.pci_id == other.pci_id && self.uuid == other.uuid
     }
 }
 
@@ -100,8 +231,20 @@ impl Device {
             Err(_) => Err(GPUError::DeviceInfoNotAvailable(CL_DEVICE_ENDIAN_LITTLE)),
         }
     }
-    pub fn bus_id(&self) -> Option<BusId> {
-        self.bus_id
+    pub fn pci_id(&self) -> PciId {
+        self.pci_id
+    }
+
+    pub fn uuid(&self) -> Option<DeviceUuid> {
+        self.uuid
+    }
+
+    /// Returns the best possible unique identifier, a UUID is preferred over a PCI ID.
+    pub fn unique_id(&self) -> UniqueId {
+        match self.uuid {
+            Some(uuid) => UniqueId::Uuid(uuid),
+            None => UniqueId::PciId(self.pci_id),
+        }
     }
 
     /// Return all available GPU devices of supported vendors.
@@ -109,70 +252,34 @@ impl Device {
         Self::all_iter().collect()
     }
 
-    pub fn by_bus_id(bus_id: BusId) -> GPUResult<&'static Device> {
+    pub fn by_pci_id(pci_id: PciId) -> GPUResult<&'static Device> {
         Self::all_iter()
-            .find(|d| match d.bus_id {
-                Some(id) => bus_id == id,
+            .find(|d| pci_id == d.pci_id)
+            .ok_or(GPUError::DeviceNotFound)
+    }
+
+    pub fn by_uuid(uuid: DeviceUuid) -> GPUResult<&'static Device> {
+        Self::all_iter()
+            .find(|d| match d.uuid {
+                Some(id) => uuid == id,
                 None => false,
             })
             .ok_or(GPUError::DeviceNotFound)
     }
 
-    pub fn cl_device_id(&self) -> cl_device_id {
-        self.device.id()
+    pub fn by_unique_id(unique_id: UniqueId) -> GPUResult<&'static Device> {
+        Self::all_iter()
+            .find(|d| unique_id == d.unique_id())
+            .ok_or(GPUError::DeviceNotFound)
     }
 
     fn all_iter() -> impl Iterator<Item = &'static Device> {
         utils::DEVICES.iter()
     }
-}
 
-#[allow(clippy::upper_case_acronyms)]
-#[derive(Debug, Clone, Copy)]
-pub enum GPUSelector {
-    BusId(u32),
-    Index(usize),
-}
-
-impl GPUSelector {
-    pub fn get_bus_id(&self) -> Option<u32> {
-        match self {
-            GPUSelector::BusId(bus_id) => Some(*bus_id),
-            GPUSelector::Index(index) => get_device_bus_id_by_index(*index),
-        }
+    pub fn cl_device_id(&self) -> cl_device_id {
+        self.device.id()
     }
-
-    pub fn get_device(&self) -> Option<&'static Device> {
-        match self {
-            GPUSelector::BusId(bus_id) => Device::by_bus_id(*bus_id).ok(),
-            GPUSelector::Index(index) => get_device_by_index(*index),
-        }
-    }
-
-    pub fn get_key(&self) -> String {
-        match self {
-            GPUSelector::BusId(id) => format!("BusID: {}", id),
-            GPUSelector::Index(idx) => {
-                if let Some(id) = self.get_bus_id() {
-                    format!("BusID: {}", id)
-                } else {
-                    format!("Index: {}", idx)
-                }
-            }
-        }
-    }
-}
-
-fn get_device_bus_id_by_index(index: usize) -> Option<BusId> {
-    if let Some(device) = get_device_by_index(index) {
-        device.bus_id
-    } else {
-        None
-    }
-}
-
-fn get_device_by_index(index: usize) -> Option<&'static Device> {
-    Device::all_iter().nth(index)
 }
 
 pub struct Program {
@@ -283,7 +390,7 @@ impl Program {
         offset: usize,
         data: &[T],
     ) -> GPUResult<()> {
-        assert!(offset + data.len() <= buffer.length, "Buffer is too small.");
+        assert!(offset + data.len() <= buffer.length, "Buffer is too small");
 
         let buff = buffer
             .buffer
@@ -301,7 +408,7 @@ impl Program {
         offset: usize,
         data: &mut [T],
     ) -> GPUResult<()> {
-        assert!(offset + data.len() <= buffer.length, "Buffer is too small.");
+        assert!(offset + data.len() <= buffer.length, "Buffer is too small");
         let buff = buffer
             .buffer
             .create_sub_buffer(CL_MEM_READ_WRITE, offset, data.len())?;
@@ -387,7 +494,10 @@ impl<'a> Kernel<'a> {
 
 #[cfg(test)]
 mod test {
-    use super::{Device, GPUError, Vendor, AMD_DEVICE_VENDOR_STRING, NVIDIA_DEVICE_VENDOR_STRING};
+    use super::{
+        Device, DeviceUuid, GPUError, PciId, UniqueId, Vendor, AMD_DEVICE_VENDOR_STRING,
+        NVIDIA_DEVICE_VENDOR_STRING,
+    };
     use std::convert::TryFrom;
 
     #[test]
@@ -414,5 +524,68 @@ mod test {
             Vendor::try_from("unknown vendor"),
             Err(GPUError::UnsupportedVendor(_))
         ));
+    }
+
+    #[test]
+    fn test_uuid() {
+        let valid_string = "46abccd6-022e-b783-572d-833f7104d05f";
+        let valid = DeviceUuid::try_from(valid_string).unwrap();
+        assert_eq!(valid_string, &valid.to_string());
+
+        let too_short_string = "ccd6-022e-b783-572d-833f7104d05f";
+        let too_short = DeviceUuid::try_from(too_short_string);
+        assert!(too_short.is_err(), "Parse error when UUID is too short.");
+
+        let invalid_hex_string = "46abccd6-022e-b783-572d-833f7104d05h";
+        let invalid_hex = DeviceUuid::try_from(invalid_hex_string);
+        assert!(
+            invalid_hex.is_err(),
+            "Parse error when UUID containts non-hex character."
+        );
+    }
+
+    #[test]
+    fn test_pci_id() {
+        let valid_string = "01:00";
+        let valid = PciId::try_from(valid_string).unwrap();
+        assert_eq!(valid_string, &valid.to_string());
+        assert_eq!(valid, PciId(0x0100));
+
+        let too_short_string = "3f";
+        let too_short = PciId::try_from(too_short_string);
+        assert!(too_short.is_err(), "Parse error when PCI ID is too short.");
+
+        let invalid_hex_string = "aaxx";
+        let invalid_hex = PciId::try_from(invalid_hex_string);
+        assert!(
+            invalid_hex.is_err(),
+            "Parse error when PCI ID containts non-hex character."
+        );
+    }
+
+    #[test]
+    fn test_unique_id() {
+        let valid_pci_id_string = "aa:bb";
+        let valid_pci_id = UniqueId::try_from(valid_pci_id_string).unwrap();
+        assert_eq!(valid_pci_id_string, &valid_pci_id.to_string());
+        assert_eq!(valid_pci_id, UniqueId::PciId(PciId(0xaabb)));
+
+        let valid_uuid_string = "aabbccdd-eeff-0011-2233-445566778899";
+        let valid_uuid = UniqueId::try_from(valid_uuid_string).unwrap();
+        assert_eq!(valid_uuid_string, &valid_uuid.to_string());
+        assert_eq!(
+            valid_uuid,
+            UniqueId::Uuid(DeviceUuid([
+                0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+                0x88, 0x99
+            ]))
+        );
+
+        let invalid_string = "aabbccddeeffgg";
+        let invalid = UniqueId::try_from(invalid_string);
+        assert!(
+            invalid.is_err(),
+            "Parse error when ID matches neither a PCI Id, nor a UUID."
+        );
     }
 }

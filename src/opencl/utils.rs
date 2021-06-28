@@ -1,19 +1,50 @@
 use std::convert::{TryFrom, TryInto};
-use std::fmt::Write;
 
 use lazy_static::lazy_static;
 use log::{debug, warn};
 use opencl3::device::DeviceInfo::CL_DEVICE_GLOBAL_MEM_SIZE;
 use sha2::{Digest, Sha256};
 
-use super::{Device, GPUError, GPUResult, Vendor};
+use super::{Device, DeviceUuid, GPUError, GPUResult, PciId, Vendor, CL_UUID_SIZE_KHR};
 
-fn get_bus_id(d: &opencl3::device::Device) -> Result<u32, GPUError> {
-    let vendor = Vendor::try_from(d.vendor()?.as_str())?;
-    match vendor {
-        Vendor::Amd => d.pci_bus_id_amd().map_err(Into::into),
-        Vendor::Nvidia => d.pci_bus_id_nv().map_err(Into::into),
-    }
+/// The PCI-ID is the combination of the PCI Bus ID and PCI Device ID.
+///
+/// It is the first two identifiers of e.g. `lspci`:
+///
+/// ```ignore
+///     4e:00.0 VGA compatible controller
+///     || └└-- Device ID
+///     └└-- Bus ID
+/// ```
+fn get_pci_id(device: &opencl3::device::Device) -> GPUResult<PciId> {
+    let vendor = Vendor::try_from(device.vendor()?.as_str())?;
+    let id = match vendor {
+        Vendor::Amd => {
+            let topo = device.topology_amd()?;
+            let bus_id = topo.bus as u16;
+            let device_id = topo.device as u16;
+            (bus_id << 8) | device_id
+        }
+        Vendor::Nvidia => {
+            let bus_id = device.pci_bus_id_nv()? as u16;
+            let device_id = device.pci_slot_id_nv()? as u16;
+            (bus_id << 8) | device_id
+        }
+    };
+    Ok(id.into())
+}
+
+fn get_uuid(device: &opencl3::device::Device) -> GPUResult<DeviceUuid> {
+    let uuid_vec = device.uuid_khr()?;
+    assert_eq!(
+        uuid_vec.len(),
+        CL_UUID_SIZE_KHR,
+        "opencl3 returned an invalid UUID: {:?}",
+        uuid_vec
+    );
+    // Unwrap is safe due to the assert
+    let uuid: [u8; CL_UUID_SIZE_KHR] = uuid_vec.try_into().unwrap();
+    Ok(uuid.into())
 }
 
 pub fn cache_path(device: &Device, cl_source: &str) -> std::io::Result<std::path::PathBuf> {
@@ -22,23 +53,14 @@ pub fn cache_path(device: &Device, cl_source: &str) -> std::io::Result<std::path
         std::fs::create_dir(&path)?;
     }
     let mut hasher = Sha256::new();
-    // If there are multiple devices with the same name and neither has a Bus-Id,
-    // then there will be a collision. Bus-Id can be missing in the case of an Apple
-    // GPU. For now, we assume that in the unlikely event of a collision, the same
-    // cache can be used.
-    // TODO: We might be able to get around this issue by using cl_vendor_id instead of Bus-Id.
     hasher.input(device.name.as_bytes());
-    if let Some(bus_id) = device.bus_id {
-        hasher.input(bus_id.to_be_bytes());
-    }
+    hasher.input(u16::from(device.pci_id).to_be_bytes());
+    hasher.input(<[u8; CL_UUID_SIZE_KHR]>::from(
+        device.uuid.unwrap_or_default(),
+    ));
     hasher.input(cl_source.as_bytes());
-    let mut digest = String::new();
-    for &byte in hasher.result()[..].iter() {
-        write!(&mut digest, "{:x}", byte).unwrap();
-    }
-    write!(&mut digest, ".bin").unwrap();
-
-    Ok(path.join(digest))
+    let filename = format!("{}.bin", hex::encode(hasher.result()));
+    Ok(path.join(filename))
 }
 
 fn get_memory(d: &opencl3::device::Device) -> GPUResult<u64> {
@@ -54,6 +76,8 @@ fn build_device_list() -> Vec<Device> {
     let mut all_devices = Vec::new();
     let platforms: Vec<_> = opencl3::platform::get_platforms().unwrap_or_default();
 
+    let mut devices_without_pci_id = Vec::new();
+
     for platform in platforms.iter() {
         let devices = platform
             .get_devices(opencl3::device::CL_DEVICE_TYPE_GPU)
@@ -62,24 +86,57 @@ fn build_device_list() -> Vec<Device> {
                 devices
                     .into_iter()
                     .map(opencl3::device::Device::new)
-                    .filter(|d| {
-                        if let Ok(vendor) = d.vendor() {
+                    .filter_map(|device| {
+                        if let Ok(vendor_string) = device.vendor() {
                             // Only use devices from the accepted vendors ...
-                            if Vendor::try_from(vendor.as_str()).is_ok() {
-                                // ... which are available.
-                                return d.available().unwrap_or(0) != 0;
+                            let vendor = Vendor::try_from(&vendor_string[..]).ok()?;
+                            // ... which are available.
+                            if device.available().unwrap_or(0) == 0 {
+                                return None;
                             }
+
+                            // `filter_map()` needs to return erros wrapped in an `Option`, hence
+                            // early returns with the question mark operator cannot be used.
+                            let name = match device.name() {
+                                Ok(name) => name,
+                                Err(error) => return Some(Err(error.into())),
+                            };
+                            let memory = match get_memory(&device) {
+                                Ok(memory) => memory,
+                                Err(error) => return Some(Err(error)),
+                            };
+                            let uuid = get_uuid(&device).ok();
+
+                            // If a device doesn't have a PCI-ID, add those later to the list of
+                            // devices with a fake PCI-ID.
+                            match get_pci_id(&device) {
+                                Ok(pci_id) => {
+                                    return Some(Ok(Device {
+                                        vendor,
+                                        name,
+                                        memory,
+                                        pci_id,
+                                        uuid,
+                                        device,
+                                    }));
+                                }
+                                Err(_) => {
+                                    // Use a temporary PCI-ID and replace it later with a
+                                    // non-colliding one.
+                                    let pci_id = PciId::from(0);
+                                    devices_without_pci_id.push(Device {
+                                        vendor,
+                                        name,
+                                        memory,
+                                        pci_id,
+                                        uuid,
+                                        device,
+                                    });
+                                    return None;
+                                }
+                            };
                         }
-                        false
-                    })
-                    .map(|d| -> GPUResult<_> {
-                        Ok(Device {
-                            vendor: d.vendor()?.as_str().try_into()?,
-                            name: d.name()?,
-                            memory: get_memory(&d)?,
-                            bus_id: get_bus_id(&d).ok(),
-                            device: d,
-                        })
+                        None
                     })
                     .collect::<GPUResult<Vec<_>>>()
             });
@@ -97,6 +154,26 @@ fn build_device_list() -> Vec<Device> {
                 );
             }
         }
+    }
+
+    // Laptops might have an integrated GPU. Such devices might have neither a PCI-ID, nor a UUID.
+    // As those devices are used for development and not for production use, it's good enough to
+    // provide a workaround which doesn't add much complexity to the code. We use a fake PCI-ID
+    // instead, which is generated by enumerating the available devices. In order to make that
+    // case easier to spot when debugging issues, a starting number which is pleasant to the human
+    // eye was choosen, that works both, decimal and hexadecimal (4660 == 0x1234).
+    let mut enumerated_device: u16 = 4660;
+    for mut device in devices_without_pci_id.into_iter() {
+        // Make sure that no device has that actual PCI-ID
+        while all_devices
+            .iter()
+            .any(|d| d.pci_id() == enumerated_device.into())
+        {
+            enumerated_device += 1;
+        }
+        device.pci_id = PciId::from(enumerated_device);
+        enumerated_device += 1;
+        all_devices.push(device);
     }
 
     debug!("loaded devices: {:?}", all_devices);
