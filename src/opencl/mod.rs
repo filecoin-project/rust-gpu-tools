@@ -2,6 +2,7 @@ mod error;
 mod utils;
 
 use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::ptr;
@@ -19,36 +20,37 @@ use opencl3::types::CL_BLOCKING;
 
 pub type BusId = u32;
 
+const AMD_DEVICE_VENDOR_STRING: &str = "AMD";
+const NVIDIA_DEVICE_VENDOR_STRING: &str = "NVIDIA Corporation";
+
 #[allow(non_camel_case_types)]
 pub type cl_device_id = opencl3::types::cl_device_id;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Brand {
+pub enum Vendor {
     Amd,
-    Apple,
     Nvidia,
 }
 
-impl Brand {
-    /// Returns a brand by name if it exists
-    fn by_name(name: &str) -> Option<Self> {
-        match name {
-            "NVIDIA CUDA" => Some(Self::Nvidia),
-            "AMD Accelerated Parallel Processing" => Some(Self::Amd),
-            "Apple" => Some(Self::Apple),
-            _ => None,
+impl TryFrom<&str> for Vendor {
+    type Error = GPUError;
+
+    fn try_from(vendor: &str) -> GPUResult<Self> {
+        match vendor {
+            AMD_DEVICE_VENDOR_STRING => Ok(Self::Amd),
+            NVIDIA_DEVICE_VENDOR_STRING => Ok(Self::Nvidia),
+            _ => Err(GPUError::UnsupportedVendor(vendor.to_string())),
         }
     }
 }
 
-impl fmt::Display for Brand {
+impl fmt::Display for Vendor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let brand = match self {
-            Brand::Nvidia => "NVIDIA CUDA",
-            Brand::Amd => "AMD Accelerated Parallel Processing",
-            Brand::Apple => "Apple",
+        let vendor = match self {
+            Self::Amd => AMD_DEVICE_VENDOR_STRING,
+            Self::Nvidia => NVIDIA_DEVICE_VENDOR_STRING,
         };
-        write!(f, "{}", brand)
+        write!(f, "{}", vendor)
     }
 }
 
@@ -59,7 +61,7 @@ pub struct Buffer<T> {
 
 #[derive(Debug, Clone)]
 pub struct Device {
-    brand: Brand,
+    vendor: Vendor,
     name: String,
     memory: u64,
     bus_id: Option<BusId>,
@@ -81,9 +83,10 @@ impl PartialEq for Device {
 impl Eq for Device {}
 
 impl Device {
-    pub fn brand(&self) -> Brand {
-        self.brand
+    pub fn vendor(&self) -> Vendor {
+        self.vendor
     }
+
     pub fn name(&self) -> String {
         self.name.clone()
     }
@@ -101,7 +104,7 @@ impl Device {
         self.bus_id
     }
 
-    /// Return all available GPU devices of supported brands.
+    /// Return all available GPU devices of supported vendors.
     pub fn all() -> Vec<&'static Device> {
         Self::all_iter().collect()
     }
@@ -384,7 +387,8 @@ impl<'a> Kernel<'a> {
 
 #[cfg(test)]
 mod test {
-    use super::Device;
+    use super::{Device, GPUError, Vendor, AMD_DEVICE_VENDOR_STRING, NVIDIA_DEVICE_VENDOR_STRING};
+    use std::convert::TryFrom;
 
     #[test]
     fn test_device_all() {
@@ -392,5 +396,23 @@ mod test {
             let devices = Device::all();
             dbg!(&devices.len());
         }
+    }
+
+    #[test]
+    fn test_vendor_from_str() {
+        assert_eq!(
+            Vendor::try_from(AMD_DEVICE_VENDOR_STRING).unwrap(),
+            Vendor::Amd,
+            "AMD vendor string can be converted."
+        );
+        assert_eq!(
+            Vendor::try_from(NVIDIA_DEVICE_VENDOR_STRING).unwrap(),
+            Vendor::Nvidia,
+            "Nvidia vendor string can be converted."
+        );
+        assert!(matches!(
+            Vendor::try_from("unknown vendor"),
+            Err(GPUError::UnsupportedVendor(_))
+        ));
     }
 }

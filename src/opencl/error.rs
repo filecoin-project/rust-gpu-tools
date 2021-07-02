@@ -18,8 +18,8 @@ pub enum GPUError {
     KernelNotFound(String),
     #[error("IO Error: {0}")]
     IO(#[from] std::io::Error),
-    #[error("Cannot get bus ID for device with vendor {0}")]
-    MissingBusId(String),
+    #[error("Vendor {0} is not supported.")]
+    UnsupportedVendor(String),
 }
 
 #[allow(clippy::upper_case_acronyms)]
