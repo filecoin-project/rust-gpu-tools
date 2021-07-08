@@ -20,6 +20,8 @@ pub enum GPUError {
     IO(#[from] std::io::Error),
     #[error("Vendor {0} is not supported.")]
     UnsupportedVendor(String),
+    #[error("{0}")]
+    InvalidId(String),
 }
 
 #[allow(clippy::upper_case_acronyms)]
