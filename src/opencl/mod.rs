@@ -370,14 +370,25 @@ impl Program {
         })
     }
 
-    pub fn create_kernel(&self, name: &str, gws: usize, lws: usize) -> GPUResult<Kernel> {
+    /// Returns a kernel.
+    ///
+    /// The `global_work_size` does *not* follow the OpenCL definition. It is *not* the total
+    /// number of threads. Instead it follows CUDA's definition and is the number of
+    /// `local_work_size` sized thread groups. So the total number of threads is
+    /// `global_work_size * local_work_size`.
+    pub fn create_kernel(
+        &self,
+        name: &str,
+        global_work_size: usize,
+        local_work_size: usize,
+    ) -> GPUResult<Kernel> {
         let kernel = self
             .kernels_by_name
             .get(name)
             .ok_or_else(|| GPUError::KernelNotFound(name.to_string()))?;
         let mut builder = ExecuteKernel::new(&kernel);
-        builder.set_global_work_size(gws);
-        builder.set_local_work_size(lws);
+        builder.set_global_work_size(global_work_size * local_work_size);
+        builder.set_local_work_size(local_work_size);
         Ok(Kernel {
             builder,
             queue: &self.queue,
