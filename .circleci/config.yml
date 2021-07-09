@@ -17,19 +17,6 @@ restore-cache: &restore-cache
       - cargo-v0-{{ checksum "rust-toolchain" }}-{{ checksum "Cargo.toml" }}-{{ checksum "Cargo.lock" }}-{{ arch }}
       - repo-source-{{ .Branch }}-{{ .Revision }}
 
-commands:
-  test_target:
-    parameters:
-      target:
-        type: string
-    steps:
-      - *restore-workspace
-      - *restore-cache
-      - run:
-          name: Test (<< parameters.target >>)
-          command: TARGET=<< parameters.target >> cargo test
-          no_output_timeout: 15m
-
 jobs:
 
   cargo_fetch:
@@ -68,16 +55,23 @@ jobs:
             - "~/.cargo"
             - "~/.rustup"
 
-  test_x86_64-unknown-linux-gnu:
+  test:
     executor: default
+    parameters:
+      cargo-options:
+        type: string
+        default: ""
     steps:
       - run: echo 'export PATH="$HOME:~/.cargo/bin:$PATH"' >> $BASH_ENV
       - run: source $BASH_ENV
       - run: sudo apt-get update -y
       - run: apt-cache search opencl
       - run: sudo apt install -y ocl-icd-opencl-dev
-      - test_target:
-          target: "x86_64-unknown-linux-gnu"
+      - *restore-workspace
+      - *restore-cache
+      - run:
+          name: Test (<< parameters.cargo-options >>)
+          command: cargo test << parameters.cargo-options >>
 
   rustfmt:
     executor: default
@@ -98,20 +92,14 @@ jobs:
       - run: echo 'export PATH="$HOME:~/.cargo/bin:$PATH"' >> $BASH_ENV
       - run: source $BASH_ENV
       - run:
-          name: Run cargo clippy
-          command: cargo clippy --all-features --all-targets -- -D warnings
-
-  build:
-    executor: default
-    steps:
-      - *restore-workspace
-      - *restore-cache
-      - run: echo 'export PATH="$HOME:~/.cargo/bin:$PATH"' >> $BASH_ENV
-      - run: source $BASH_ENV
+          name: Run cargo clippy (features (cuda + opencl))
+          command: cargo clippy --workspace --all-targets -- -D warnings
       - run:
-          name: Run cargo release build
-          command: cargo build --release
-
+          name: Run cargo clippy (cuda)
+          command: cargo clippy --workspace --all-targets --no-default-features --features cuda -- -D warnings
+      - run:
+          name: Run cargo clippy (opencl)
+          command: cargo clippy --workspace --all-targets --no-default-features --features opencl -- -D warnings
 
 workflows:
   version: 2.1
@@ -125,9 +113,18 @@ workflows:
       - clippy:
           requires:
             - cargo_fetch
-      - test_x86_64-unknown-linux-gnu:
-          requires:
-            - cargo_fetch
-      - build:
+      # TODO vmx 2021-07-09: Install CUDA properly on CI
+      #- test:
+      #    name: Test with default features (cuda + opencl)
+      #    requires:
+      #      - cargo_fetch
+      #- test:
+      #    name: Test CUDA
+      #    cargo-options: "--no-default-features --features cuda"
+      #    requires:
+      #      - cargo_fetch
+      - test:
+          name: Test OpenCL
+          cargo-options: "--no-default-features --features opencl"
           requires:
             - cargo_fetch
