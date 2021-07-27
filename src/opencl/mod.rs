@@ -513,10 +513,11 @@ mod test {
 
     #[test]
     fn test_device_all() {
-        for _ in 0..10 {
-            let devices = Device::all();
-            dbg!(&devices.len());
+        let devices = Device::all();
+        for device in devices.iter() {
+            println!("device: {:?}", device);
         }
+        assert!(!devices.is_empty(), "No supported GPU found.");
     }
 
     #[test]
