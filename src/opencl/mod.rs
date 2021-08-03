@@ -19,8 +19,13 @@ use opencl3::memory::CL_MEM_READ_WRITE;
 use opencl3::program::ProgramInfo::CL_PROGRAM_BINARIES;
 use opencl3::types::CL_BLOCKING;
 
-const AMD_DEVICE_VENDOR_STRING: &str = "AMD";
+const AMD_DEVICE_VENDOR_STRING: &str = "Advanced Micro Devices, Inc.";
+const AMD_DEVICE_VENDOR_ID: u32 = 0x1002;
+// For some reason integrated AMD cards on Apple don't have the usual vendor name and ID
+const AMD_DEVICE_ON_APPLE_VENDOR_STRING: &str = "AMD";
+const AMD_DEVICE_ON_APPLE_VENDOR_ID: u32 = 0x1021d00;
 const NVIDIA_DEVICE_VENDOR_STRING: &str = "NVIDIA Corporation";
+const NVIDIA_DEVICE_VENDOR_ID: u32 = 0x10de;
 
 #[allow(non_camel_case_types)]
 pub type cl_device_id = opencl3::types::cl_device_id;
@@ -167,8 +172,22 @@ impl TryFrom<&str> for Vendor {
     fn try_from(vendor: &str) -> GPUResult<Self> {
         match vendor {
             AMD_DEVICE_VENDOR_STRING => Ok(Self::Amd),
+            AMD_DEVICE_ON_APPLE_VENDOR_STRING => Ok(Self::Amd),
             NVIDIA_DEVICE_VENDOR_STRING => Ok(Self::Nvidia),
             _ => Err(GPUError::UnsupportedVendor(vendor.to_string())),
+        }
+    }
+}
+
+impl TryFrom<u32> for Vendor {
+    type Error = GPUError;
+
+    fn try_from(vendor: u32) -> GPUResult<Self> {
+        match vendor {
+            AMD_DEVICE_VENDOR_ID => Ok(Self::Amd),
+            AMD_DEVICE_ON_APPLE_VENDOR_ID => Ok(Self::Amd),
+            NVIDIA_DEVICE_VENDOR_ID => Ok(Self::Nvidia),
+            _ => Err(GPUError::UnsupportedVendor(format!("0x{:x}", vendor))),
         }
     }
 }
@@ -506,8 +525,9 @@ impl<'a> Kernel<'a> {
 #[cfg(test)]
 mod test {
     use super::{
-        Device, DeviceUuid, GPUError, PciId, UniqueId, Vendor, AMD_DEVICE_VENDOR_STRING,
-        NVIDIA_DEVICE_VENDOR_STRING,
+        Device, DeviceUuid, GPUError, PciId, UniqueId, Vendor, AMD_DEVICE_ON_APPLE_VENDOR_ID,
+        AMD_DEVICE_ON_APPLE_VENDOR_STRING, AMD_DEVICE_VENDOR_ID, AMD_DEVICE_VENDOR_STRING,
+        NVIDIA_DEVICE_VENDOR_ID, NVIDIA_DEVICE_VENDOR_STRING,
     };
     use std::convert::TryFrom;
 
@@ -528,6 +548,11 @@ mod test {
             "AMD vendor string can be converted."
         );
         assert_eq!(
+            Vendor::try_from(AMD_DEVICE_ON_APPLE_VENDOR_STRING).unwrap(),
+            Vendor::Amd,
+            "AMD vendor string (on apple) can be converted."
+        );
+        assert_eq!(
             Vendor::try_from(NVIDIA_DEVICE_VENDOR_STRING).unwrap(),
             Vendor::Nvidia,
             "Nvidia vendor string can be converted."
@@ -536,6 +561,43 @@ mod test {
             Vendor::try_from("unknown vendor"),
             Err(GPUError::UnsupportedVendor(_))
         ));
+    }
+
+    #[test]
+    fn test_vendor_from_u32() {
+        assert_eq!(
+            Vendor::try_from(AMD_DEVICE_VENDOR_ID).unwrap(),
+            Vendor::Amd,
+            "AMD vendor ID can be converted."
+        );
+        assert_eq!(
+            Vendor::try_from(AMD_DEVICE_ON_APPLE_VENDOR_ID).unwrap(),
+            Vendor::Amd,
+            "AMD vendor ID (on apple) can be converted."
+        );
+        assert_eq!(
+            Vendor::try_from(NVIDIA_DEVICE_VENDOR_ID).unwrap(),
+            Vendor::Nvidia,
+            "Nvidia vendor ID can be converted."
+        );
+        assert!(matches!(
+            Vendor::try_from(0x1abc),
+            Err(GPUError::UnsupportedVendor(_))
+        ));
+    }
+
+    #[test]
+    fn test_vendor_display() {
+        assert_eq!(
+            Vendor::Amd.to_string(),
+            AMD_DEVICE_VENDOR_STRING,
+            "AMD vendor can be converted to string."
+        );
+        assert_eq!(
+            Vendor::Nvidia.to_string(),
+            NVIDIA_DEVICE_VENDOR_STRING,
+            "Nvidia vendor can be converted to string."
+        );
     }
 
     #[test]

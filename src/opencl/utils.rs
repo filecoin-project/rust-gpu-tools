@@ -17,7 +17,7 @@ use super::{Device, DeviceUuid, GPUError, GPUResult, PciId, Vendor, CL_UUID_SIZE
 ///     └└-- Bus ID
 /// ```
 fn get_pci_id(device: &opencl3::device::Device) -> GPUResult<PciId> {
-    let vendor = Vendor::try_from(device.vendor()?.as_str())?;
+    let vendor = Vendor::try_from(device.vendor_id()?)?;
     let id = match vendor {
         Vendor::Amd => {
             let topo = device.topology_amd()?;
@@ -87,9 +87,9 @@ fn build_device_list() -> Vec<Device> {
                     .into_iter()
                     .map(opencl3::device::Device::new)
                     .filter_map(|device| {
-                        if let Ok(vendor_string) = device.vendor() {
+                        if let Ok(vendor_id) = device.vendor_id() {
                             // Only use devices from the accepted vendors ...
-                            let vendor = Vendor::try_from(&vendor_string[..]).ok()?;
+                            let vendor = Vendor::try_from(vendor_id).ok()?;
                             // ... which are available.
                             if device.available().unwrap_or(0) == 0 {
                                 return None;
