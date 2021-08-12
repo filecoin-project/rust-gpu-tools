@@ -11,7 +11,7 @@ use super::{Device, DeviceUuid, GPUError, GPUResult, PciId, Vendor, CL_UUID_SIZE
 ///
 /// It is the first two identifiers of e.g. `lspci`:
 ///
-/// ```ignore
+/// ```text
 ///     4e:00.0 VGA compatible controller
 ///     || └└-- Device ID
 ///     └└-- Bus ID
@@ -72,6 +72,10 @@ lazy_static! {
     pub(crate) static ref DEVICES: Vec<Device> = build_device_list();
 }
 
+/// Get a list of all available and supported devices.
+///
+/// If there is a failure retrieving a device, it won't lead to a hard error, but an error will be
+/// logged and the corresponding device won't be available.
 fn build_device_list() -> Vec<Device> {
     let mut all_devices = Vec::new();
     let platforms: Vec<_> = opencl3::platform::get_platforms().unwrap_or_default();
