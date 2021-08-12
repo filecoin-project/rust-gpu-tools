@@ -509,24 +509,24 @@ impl Program {
 /// The kernel doesn't support being called with custom types, hence some conversion might be
 /// needed. This trait enables automatic coversions, so that any type implementing it can be
 /// passed into a [`Kernel`].
-pub trait KernelArgument<'a> {
+pub trait KernelArgument {
     /// Apply the kernel argument to the kernel.
-    fn push(&self, kernel: &mut Kernel<'a>);
+    fn push(&self, kernel: &mut Kernel);
 }
 
-impl<'a, T> KernelArgument<'a> for Buffer<T> {
-    fn push(&self, kernel: &mut Kernel<'a>) {
+impl<T> KernelArgument for Buffer<T> {
+    fn push(&self, kernel: &mut Kernel) {
         kernel.builder.set_arg(&self.buffer);
     }
 }
 
-impl KernelArgument<'_> for i32 {
+impl KernelArgument for i32 {
     fn push(&self, kernel: &mut Kernel) {
         kernel.builder.set_arg(self);
     }
 }
 
-impl KernelArgument<'_> for u32 {
+impl KernelArgument for u32 {
     fn push(&self, kernel: &mut Kernel) {
         kernel.builder.set_arg(self);
     }
@@ -548,7 +548,7 @@ impl<T> LocalBuffer<T> {
     }
 }
 
-impl<T> KernelArgument<'_> for LocalBuffer<T> {
+impl<T> KernelArgument for LocalBuffer<T> {
     fn push(&self, kernel: &mut Kernel) {
         kernel
             .builder
@@ -565,7 +565,7 @@ pub struct Kernel<'a> {
 
 impl<'a> Kernel<'a> {
     /// Set a kernel argument.
-    pub fn arg<T: KernelArgument<'a>>(mut self, t: &T) -> Self {
+    pub fn arg<T: KernelArgument>(mut self, t: &T) -> Self {
         t.push(&mut self);
         self
     }
