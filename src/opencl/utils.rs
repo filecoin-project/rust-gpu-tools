@@ -1,11 +1,13 @@
 use std::convert::{TryFrom, TryInto};
 
-use lazy_static::lazy_static;
 use log::{debug, warn};
 use opencl3::device::DeviceInfo::CL_DEVICE_GLOBAL_MEM_SIZE;
+use opencl3::device::CL_UUID_SIZE_KHR;
 use sha2::{Digest, Sha256};
 
-use super::{Device, DeviceUuid, GPUError, GPUResult, PciId, Vendor, CL_UUID_SIZE_KHR};
+use crate::device::{DeviceUuid, PciId, Vendor};
+use crate::error::{GPUError, GPUResult};
+use crate::opencl::Device;
 
 /// The PCI-ID is the combination of the PCI Bus ID and PCI Device ID.
 ///
@@ -68,15 +70,11 @@ fn get_memory(d: &opencl3::device::Device) -> GPUResult<u64> {
         .map_err(|_| GPUError::DeviceInfoNotAvailable(CL_DEVICE_GLOBAL_MEM_SIZE))
 }
 
-lazy_static! {
-    pub(crate) static ref DEVICES: Vec<Device> = build_device_list();
-}
-
 /// Get a list of all available and supported devices.
 ///
 /// If there is a failure retrieving a device, it won't lead to a hard error, but an error will be
 /// logged and the corresponding device won't be available.
-fn build_device_list() -> Vec<Device> {
+pub(crate) fn build_device_list() -> Vec<Device> {
     let mut all_devices = Vec::new();
     let platforms: Vec<_> = opencl3::platform::get_platforms().unwrap_or_default();
 
