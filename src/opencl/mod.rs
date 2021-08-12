@@ -225,6 +225,9 @@ pub struct Device {
 
 impl Hash for Device {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        self.vendor.hash(state);
+        self.name.hash(state);
+        self.memory.hash(state);
         self.pci_id.hash(state);
         self.uuid.hash(state);
     }
@@ -232,7 +235,11 @@ impl Hash for Device {
 
 impl PartialEq for Device {
     fn eq(&self, other: &Self) -> bool {
-        self.pci_id == other.pci_id && self.uuid == other.uuid
+        self.vendor == other.vendor
+            && self.name == other.name
+            && self.memory == other.memory
+            && self.pci_id == other.pci_id
+            && self.uuid == other.uuid
     }
 }
 
