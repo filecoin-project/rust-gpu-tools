@@ -261,11 +261,9 @@ impl Device {
         self.memory
     }
     pub fn is_little_endian(&self) -> GPUResult<bool> {
-        match self.device.endian_little() {
-            Ok(0) => Ok(false),
-            Ok(_) => Ok(true),
-            Err(_) => Err(GPUError::DeviceInfoNotAvailable(CL_DEVICE_ENDIAN_LITTLE)),
-        }
+        self.device
+            .endian_little()
+            .map_err(|_| GPUError::DeviceInfoNotAvailable(CL_DEVICE_ENDIAN_LITTLE))
     }
 
     /// Returns the PCI-ID of the GPU, see the [`PciId`] type for more information.
@@ -461,12 +459,12 @@ impl Program {
     ) -> GPUResult<()> {
         assert!(offset + data.len() <= buffer.length, "Buffer is too small");
 
-        let buff = buffer
+        let mut buff = buffer
             .buffer
             .create_sub_buffer(CL_MEM_READ_WRITE, offset, data.len())?;
 
         self.queue
-            .enqueue_write_buffer(&buff, CL_BLOCKING, 0, data, &[])?;
+            .enqueue_write_buffer(&mut buff, CL_BLOCKING, 0, data, &[])?;
 
         Ok(())
     }

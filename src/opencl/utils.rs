@@ -95,7 +95,7 @@ fn build_device_list() -> Vec<Device> {
                             // Only use devices from the accepted vendors ...
                             let vendor = Vendor::try_from(vendor_id).ok()?;
                             // ... which are available.
-                            if device.available().unwrap_or(0) == 0 {
+                            if !device.available().unwrap_or(false) {
                                 return None;
                             }
 
