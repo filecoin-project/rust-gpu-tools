@@ -307,17 +307,16 @@ impl Program {
             "Buffer is too small."
         );
 
-        let mut buff = buffer
-            .buffer
-            .create_sub_buffer(CL_MEM_READ_WRITE, offset, data.len())?;
+        let bytes_len = data.len() * std::mem::size_of::<T>();
+        let mut buff = buffer.buffer.create_sub_buffer(
+            CL_MEM_READ_WRITE,
+            offset * std::mem::size_of::<T>(),
+            bytes_len,
+        )?;
 
         let data = unsafe {
-            std::slice::from_raw_parts(
-                data.as_ptr() as *const T as *const u8,
-                data.len() * std::mem::size_of::<T>(),
-            )
+            std::slice::from_raw_parts(data.as_ptr() as *const T as *const u8, bytes_len)
         };
-
         self.queue
             .enqueue_write_buffer(&mut buff, CL_BLOCKING, 0, &data, &[])?;
 
@@ -334,15 +333,15 @@ impl Program {
             offset + data.len() <= buffer.length(),
             "Buffer is too small."
         );
-        let buff = buffer
-            .buffer
-            .create_sub_buffer(CL_MEM_READ_WRITE, offset, data.len())?;
+        let bytes_len = data.len() * std::mem::size_of::<T>();
+        let buff = buffer.buffer.create_sub_buffer(
+            CL_MEM_READ_WRITE,
+            offset * std::mem::size_of::<T>(),
+            bytes_len,
+        )?;
 
         let mut data = unsafe {
-            std::slice::from_raw_parts_mut(
-                data.as_mut_ptr() as *mut T as *mut u8,
-                data.len() * std::mem::size_of::<T>(),
-            )
+            std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut T as *mut u8, bytes_len)
         };
         self.queue
             .enqueue_read_buffer(&buff, CL_BLOCKING, 0, &mut data, &[])?;
