@@ -98,11 +98,9 @@ impl Device {
         self.memory
     }
     pub fn is_little_endian(&self) -> GPUResult<bool> {
-        match self.device.endian_little() {
-            Ok(0) => Ok(false),
-            Ok(_) => Ok(true),
-            Err(_) => Err(GPUError::DeviceInfoNotAvailable(CL_DEVICE_ENDIAN_LITTLE)),
-        }
+        self.device
+            .endian_little()
+            .map_err(|_| GPUError::DeviceInfoNotAvailable(CL_DEVICE_ENDIAN_LITTLE))
     }
     pub fn bus_id(&self) -> Option<BusId> {
         self.bus_id
@@ -247,7 +245,7 @@ impl Program {
 
     pub fn create_buffer<T>(&self, length: usize) -> GPUResult<Buffer<T>> {
         assert!(length > 0);
-        let buff = opencl3::memory::Buffer::create(
+        let mut buff = opencl3::memory::Buffer::create(
             &self.context,
             CL_MEM_READ_WRITE,
             // TODO vmx 2021-03-15: multiplying with the memsize of the type seems to be wrong.
@@ -258,7 +256,7 @@ impl Program {
             ptr::null_mut(),
         )?;
         self.queue
-            .enqueue_write_buffer(&buff, opencl3::types::CL_BLOCKING, 0, &[0u8], &[])?;
+            .enqueue_write_buffer(&mut buff, opencl3::types::CL_BLOCKING, 0, &[0u8], &[])?;
 
         Ok(Buffer::<T> {
             buffer: buff,
@@ -309,7 +307,7 @@ impl Program {
             "Buffer is too small."
         );
 
-        let buff = buffer
+        let mut buff = buffer
             .buffer
             .create_sub_buffer(CL_MEM_READ_WRITE, offset, data.len())?;
 
@@ -321,7 +319,7 @@ impl Program {
         };
 
         self.queue
-            .enqueue_write_buffer(&buff, CL_BLOCKING, 0, &data, &[])?;
+            .enqueue_write_buffer(&mut buff, CL_BLOCKING, 0, &data, &[])?;
 
         Ok(())
     }

@@ -79,7 +79,7 @@ fn build_device_list() -> Vec<Device> {
                                     // Only use devices from the accepted vendors ...
                                     AMD_DEVICE_VENDOR_STRING | NVIDIA_DEVICE_VENDOR_STRING => {
                                         // ... which are available.
-                                        return d.available().unwrap_or(0) != 0;
+                                        return d.available().unwrap_or(false);
                                     }
                                     _ => (),
                                 }
