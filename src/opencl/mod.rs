@@ -206,9 +206,10 @@ impl fmt::Display for Vendor {
 
 /// A Buffer to be used for sending and receiving data to/from the GPU.
 pub struct Buffer<T> {
-    buffer: opencl3::memory::Buffer<T>,
+    buffer: opencl3::memory::Buffer<u8>,
     /// The number of T-sized elements.
     length: usize,
+    _phantom: std::marker::PhantomData<T>,
 }
 
 /// OpenCL specific device.
@@ -410,16 +411,23 @@ impl Program {
     /// The `length` is the number of elements to create.
     pub fn create_buffer<T>(&self, length: usize) -> GPUResult<Buffer<T>> {
         assert!(length > 0);
-        let buff = opencl3::memory::Buffer::create(
+        let mut buff = opencl3::memory::Buffer::create(
             &self.context,
             CL_MEM_READ_WRITE,
-            length,
+            // The input length is the number of elements, but we create a `u8` buffer. Hence the
+            // length needs to be the number of bytes.
+            length * std::mem::size_of::<T>(),
             ptr::null_mut(),
         )?;
+
+        // Write some data right-away. This makes a significant performance different.
+        self.queue
+            .enqueue_write_buffer(&mut buff, opencl3::types::CL_BLOCKING, 0, &[0u8], &[])?;
 
         Ok(Buffer::<T> {
             buffer: buff,
             length,
+            _phantom: std::marker::PhantomData,
         })
     }
 
@@ -459,12 +467,18 @@ impl Program {
     ) -> GPUResult<()> {
         assert!(offset + data.len() <= buffer.length, "Buffer is too small");
 
-        let mut buff = buffer
-            .buffer
-            .create_sub_buffer(CL_MEM_READ_WRITE, offset, data.len())?;
+        let bytes_len = data.len() * std::mem::size_of::<T>();
+        let mut buff = buffer.buffer.create_sub_buffer(
+            CL_MEM_READ_WRITE,
+            offset * std::mem::size_of::<T>(),
+            bytes_len,
+        )?;
 
+        let bytes = unsafe {
+            std::slice::from_raw_parts(data.as_ptr() as *const T as *const u8, bytes_len)
+        };
         self.queue
-            .enqueue_write_buffer(&mut buff, CL_BLOCKING, 0, data, &[])?;
+            .enqueue_write_buffer(&mut buff, CL_BLOCKING, 0, &bytes, &[])?;
 
         Ok(())
     }
@@ -479,12 +493,19 @@ impl Program {
         data: &mut [T],
     ) -> GPUResult<()> {
         assert!(offset + data.len() <= buffer.length, "Buffer is too small");
-        let buff = buffer
-            .buffer
-            .create_sub_buffer(CL_MEM_READ_WRITE, offset, data.len())?;
 
+        let bytes_len = data.len() * std::mem::size_of::<T>();
+        let buff = buffer.buffer.create_sub_buffer(
+            CL_MEM_READ_WRITE,
+            offset * std::mem::size_of::<T>(),
+            bytes_len,
+        )?;
+
+        let mut bytes = unsafe {
+            std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut T as *mut u8, bytes_len)
+        };
         self.queue
-            .enqueue_read_buffer(&buff, CL_BLOCKING, 0, data, &[])?;
+            .enqueue_read_buffer(&buff, CL_BLOCKING, 0, &mut bytes, &[])?;
 
         Ok(())
     }
