@@ -317,7 +317,7 @@ unsafe impl Send for Program {}
 ///
 /// Kernel arguments implement this trait, so that they can be converted it into the correct
 /// pointers needed by the actual kernel call.
-pub trait KernelArgument: fmt::Debug {
+pub trait KernelArgument {
     /// Converts into a C void pointer.
     fn as_c_void(&self) -> *mut c_void;
 
@@ -328,7 +328,7 @@ pub trait KernelArgument: fmt::Debug {
     }
 }
 
-impl<T: fmt::Debug> KernelArgument for Buffer<T> {
+impl<T> KernelArgument for Buffer<T> {
     fn as_c_void(&self) -> *mut c_void {
         &self.buffer as *const _ as _
     }
@@ -346,7 +346,7 @@ impl KernelArgument for u32 {
     }
 }
 
-impl<T: fmt::Debug> KernelArgument for LocalBuffer<T> {
+impl<T> KernelArgument for LocalBuffer<T> {
     // This is a hack: on CUDA kernels, you cannot have `__shared__` (`__local` in OpenCL lingo)
     // kernel parameters. Hence, just pass on an arbirtary valid pointer. It won't be used, so it
     // doesn't matter where it actually points to. A null pointer cannot be used as CUDA would
@@ -362,13 +362,29 @@ impl<T: fmt::Debug> KernelArgument for LocalBuffer<T> {
 }
 
 /// A kernel that can be executed.
-#[derive(Debug)]
 pub struct Kernel<'a> {
     function: rustacuda::function::Function<'a>,
     global_work_size: usize,
     local_work_size: usize,
     stream: &'a Stream,
     args: Vec<&'a dyn KernelArgument>,
+}
+
+impl fmt::Debug for Kernel<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let args = self
+            .args
+            .iter()
+            .map(|arg| (arg.as_c_void(), arg.shared_mem()))
+            .collect::<Vec<_>>();
+        f.debug_struct("Kernel")
+            .field("function", &self.function)
+            .field("global_work_size", &self.global_work_size)
+            .field("local_work_size", &self.local_work_size)
+            .field("stream", &self.stream)
+            .field("args", &args)
+            .finish()
+    }
 }
 
 impl<'a> Kernel<'a> {
