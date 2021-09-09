@@ -25,6 +25,7 @@ use crate::LocalBuffer;
 pub type cl_device_id = opencl3::types::cl_device_id;
 
 /// A Buffer to be used for sending and receiving data to/from the GPU.
+#[derive(Debug)]
 pub struct Buffer<T> {
     buffer: opencl3::memory::Buffer<u8>,
     /// The number of T-sized elements.
