@@ -242,6 +242,9 @@ impl Program {
         let bytes = unsafe {
             std::slice::from_raw_parts(slice.as_ptr() as *const T as *const u8, bytes_len)
         };
+        // Write some data right-away. This makes a significant performance different.
+        self.queue
+            .enqueue_write_buffer(&mut buffer, CL_BLOCKING, 0, &[0u8], &[])?;
         self.queue
             .enqueue_write_buffer(&mut buffer, CL_BLOCKING, 0, &bytes, &[])?;
 
