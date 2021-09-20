@@ -223,19 +223,7 @@ impl Program {
     }
 
     /// Puts data from an existing buffer onto the GPU.
-    ///
-    /// The `offset` is in number of `T` sized elements, not in their byte size.
-    pub fn write_from_buffer<T>(
-        &self,
-        buffer: &mut Buffer<T>,
-        offset: usize,
-        data: &[T],
-    ) -> GPUResult<()> {
-        if offset > 0 {
-            return Err(GPUError::Generic(
-                "Offsets are not supported by CUDA.".to_string(),
-            ));
-        }
+    pub fn write_from_buffer<T>(&self, buffer: &mut Buffer<T>, data: &[T]) -> GPUResult<()> {
         assert!(data.len() <= buffer.length, "Buffer is too small");
 
         // Transmuting types is safe as long a sizes match.
@@ -254,19 +242,7 @@ impl Program {
     }
 
     /// Reads data from the GPU into an existing buffer.
-    ///
-    /// The `offset` is in number of `T` sized elements, not in their byte size.
-    pub fn read_into_buffer<T>(
-        &self,
-        buffer: &Buffer<T>,
-        offset: usize,
-        data: &mut [T],
-    ) -> GPUResult<()> {
-        if offset > 0 {
-            return Err(GPUError::Generic(
-                "Offsets are not supported by CUDA.".to_string(),
-            ));
-        }
+    pub fn read_into_buffer<T>(&self, buffer: &Buffer<T>, data: &mut [T]) -> GPUResult<()> {
         assert!(data.len() <= buffer.length, "Buffer is too small");
 
         // Transmuting types is safe as long a sizes match.

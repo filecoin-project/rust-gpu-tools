@@ -282,22 +282,19 @@ impl Program {
     }
 
     /// Puts data from an existing buffer onto the GPU.
-    ///
-    /// The `offset` is in number of `T` sized elements, not in their byte size.
     pub fn write_from_buffer<T>(
         &self,
         // From Rust's perspective, this buffer doesn't need to be mutable. But the sub-buffer is
         // mutating the buffer, so it really should be.
         buffer: &mut Buffer<T>,
-        offset: usize,
         data: &[T],
     ) -> GPUResult<()> {
-        assert!(offset + data.len() <= buffer.length, "Buffer is too small");
+        assert!(data.len() <= buffer.length, "Buffer is too small");
 
         let bytes_len = data.len() * std::mem::size_of::<T>();
         let mut buff = buffer.buffer.create_sub_buffer(
             CL_MEM_READ_WRITE,
-            offset * std::mem::size_of::<T>(),
+            std::mem::size_of::<T>(),
             bytes_len,
         )?;
 
@@ -311,20 +308,13 @@ impl Program {
     }
 
     /// Reads data from the GPU into an existing buffer.
-    ///
-    /// The `offset` is in number of `T` sized elements, not in their byte size.
-    pub fn read_into_buffer<T>(
-        &self,
-        buffer: &Buffer<T>,
-        offset: usize,
-        data: &mut [T],
-    ) -> GPUResult<()> {
-        assert!(offset + data.len() <= buffer.length, "Buffer is too small");
+    pub fn read_into_buffer<T>(&self, buffer: &Buffer<T>, data: &mut [T]) -> GPUResult<()> {
+        assert!(data.len() <= buffer.length, "Buffer is too small");
 
         let bytes_len = data.len() * std::mem::size_of::<T>();
         let buff = buffer.buffer.create_sub_buffer(
             CL_MEM_READ_WRITE,
-            offset * std::mem::size_of::<T>(),
+            std::mem::size_of::<T>(),
             bytes_len,
         )?;
 
