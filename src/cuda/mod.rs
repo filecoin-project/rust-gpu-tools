@@ -1,6 +1,6 @@
 //! The CUDA specific implementation of a [`Buffer`], [`Device`], [`Program`] and [`Kernel`].
 //!
-//! The currenty operation mode is synchronuous, in order to have higher safety gurarantees. All
+//! The current operation mode is synchronuous, in order to have higher safety gurarantees. All
 //! operations happen on a single stream, which is synchronized after each operation. This is a
 //! similar behaviour to CUDA's default stream. The default stream isn't used for two reasons:
 //!
@@ -279,13 +279,13 @@ impl Program {
 
     /// Pop the current context.
     ///
-    /// It panics it it cannot as it's an unrecoverable error.
+    /// It panics as it's an unrecoverable error.
     fn pop_context() {
-        rustacuda::context::ContextStack::pop().expect("Cannot remove newly created context.");
+        rustacuda::context::ContextStack::pop().expect("Cannot remove context.");
     }
 }
 
-// TODO vmx 2021-07-07: Check if RustaCUDA types use in `Program` can be made `Send`, so that
+// TODO vmx 2021-07-07: Check if RustaCUDA types used in `Program` can be made `Send`, so that
 // this manual `Send` implementation is no longer needed.
 unsafe impl Send for Program {}
 
