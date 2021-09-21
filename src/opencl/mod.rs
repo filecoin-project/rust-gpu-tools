@@ -291,18 +291,15 @@ impl Program {
     ) -> GPUResult<()> {
         assert!(data.len() <= buffer.length, "Buffer is too small");
 
-        let bytes_len = data.len() * std::mem::size_of::<T>();
-        let mut buff = buffer.buffer.create_sub_buffer(
-            CL_MEM_READ_WRITE,
-            std::mem::size_of::<T>(),
-            bytes_len,
-        )?;
-
+        // It is safe as long as the sizes match.
         let bytes = unsafe {
-            std::slice::from_raw_parts(data.as_ptr() as *const T as *const u8, bytes_len)
+            std::slice::from_raw_parts(
+                data.as_ptr() as *const T as *const u8,
+                data.len() * std::mem::size_of::<T>(),
+            )
         };
         self.queue
-            .enqueue_write_buffer(&mut buff, CL_BLOCKING, 0, &bytes, &[])?;
+            .enqueue_write_buffer(&mut buffer.buffer, CL_BLOCKING, 0, &bytes, &[])?;
 
         Ok(())
     }
@@ -311,18 +308,15 @@ impl Program {
     pub fn read_into_buffer<T>(&self, buffer: &Buffer<T>, data: &mut [T]) -> GPUResult<()> {
         assert!(data.len() <= buffer.length, "Buffer is too small");
 
-        let bytes_len = data.len() * std::mem::size_of::<T>();
-        let buff = buffer.buffer.create_sub_buffer(
-            CL_MEM_READ_WRITE,
-            std::mem::size_of::<T>(),
-            bytes_len,
-        )?;
-
+        // It is safe as long as the sizes match.
         let mut bytes = unsafe {
-            std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut T as *mut u8, bytes_len)
+            std::slice::from_raw_parts_mut(
+                data.as_mut_ptr() as *mut T as *mut u8,
+                data.len() * std::mem::size_of::<T>(),
+            )
         };
         self.queue
-            .enqueue_read_buffer(&buff, CL_BLOCKING, 0, &mut bytes, &[])?;
+            .enqueue_read_buffer(&buffer.buffer, CL_BLOCKING, 0, &mut bytes, &[])?;
 
         Ok(())
     }
