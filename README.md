@@ -6,7 +6,7 @@ An abstraction library to run kernels on both CUDA and OpenCL.
 
 You need to write the code that interacts with the GPU only once. Below is such code that runs a
 kernel on CUDA and/or OpenCL. For a full working example, please see the [`examples`](examples)
-directory.
+directory. You can run it via `cargo run --example add`.
 
 ```rust
 let closures = program_closures!(|program, _args| -> Result<Vec<u32>, GPUError> {
