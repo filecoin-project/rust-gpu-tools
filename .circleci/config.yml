@@ -117,6 +117,16 @@ jobs:
           name: Run cargo release build
           command: cargo build --release
 
+  example:
+    executor: default
+    steps:
+      - *restore-workspace
+      - *restore-cache
+      - set-env-path
+      - run:
+          name: Run `add` example
+          command: cargo run --example add
+
 
 workflows:
   version: 2.1
@@ -134,5 +144,8 @@ workflows:
           requires:
             - cargo_fetch
       - build:
+          requires:
+            - cargo_fetch
+      - example:
           requires:
             - cargo_fetch
