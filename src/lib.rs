@@ -21,7 +21,7 @@ pub mod cuda;
 #[cfg(feature = "opencl")]
 pub mod opencl;
 
-pub use corecounts::CORE_COUNTS;
+pub use corecounts::CUDA_CORES;
 pub use device::{Device, DeviceUuid, Framework, PciId, UniqueId, Vendor};
 pub use error::GPUError;
 #[cfg(any(feature = "cuda", feature = "opencl"))]

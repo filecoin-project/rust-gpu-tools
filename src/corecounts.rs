@@ -7,9 +7,9 @@ use once_cell::sync::Lazy;
 /// The number of CUDA cores.
 ///
 /// For non CUDA cards, a number is estimated based on the OpenCL compute units is chosen.
-pub static CORE_COUNTS: Lazy<HashMap<String, usize>> = Lazy::new(core_counts);
+pub static CUDA_CORES: Lazy<HashMap<String, usize>> = Lazy::new(cuda_cores);
 
-fn core_counts() -> HashMap<String, usize> {
+fn cuda_cores() -> HashMap<String, usize> {
     let mut core_counts: HashMap<String, usize> = vec![
         // AMD
         ("gfx1010".to_string(), 2560),
@@ -65,26 +65,26 @@ mod tests {
     use std::env;
 
     #[test]
-    fn get_core_count() {
-        let core_counts = super::core_counts();
+    fn get_cuda_cores() {
+        let core_counts = super::cuda_cores();
         let rtx_2080_ti_core_count = *core_counts.get("GeForce RTX 2080 Ti").unwrap();
         assert_eq!(rtx_2080_ti_core_count, 4352);
     }
 
     #[test]
-    fn get_core_count_missing() {
-        let core_counts = super::core_counts();
-        let unknown_core_count = core_counts.get("My Unknown GPU").is_none();
+    fn get_cuda_cores_missing() {
+        let core_counts = super::cuda_cores();
+        let unknown_core_count = core_counts.get("My unknown GPU").is_none();
         assert!(unknown_core_count);
     }
 
     #[test]
-    fn get_core_count_custom() {
+    fn get_cuda_cores_custom() {
         env::set_var(
             "RUST_GPU_TOOLS_CUSTOM_GPU",
             "My custom GPU:12345,My other GPU:4444",
         );
-        let core_counts = super::core_counts();
+        let core_counts = super::cuda_cores();
         let custom_core_count = *core_counts.get("My custom GPU").unwrap();
         assert_eq!(custom_core_count, 12345);
     }
