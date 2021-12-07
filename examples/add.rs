@@ -38,7 +38,7 @@ pub fn main() {
         let result_buffer = unsafe { program.create_buffer::<u32>(length)? };
 
         // Get the kernel.
-        let kernel = program.create_kernel("add", 8, 4)?;
+        let kernel = program.create_kernel("add", 1, 1)?;
 
         // Execute the kernel.
         kernel
@@ -67,6 +67,6 @@ pub fn main() {
     // Then we run it on OpenCL.
     let opencl_program = opencl(&device);
     let opencl_result = opencl_program.run(closures, ()).unwrap();
-    assert_eq!(cuda_result, [6, 8, 10, 12]);
+    assert_eq!(opencl_result, [6, 8, 10, 12]);
     println!("OpenCL result: {:?}", opencl_result);
 }
