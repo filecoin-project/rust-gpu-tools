@@ -25,6 +25,7 @@ fn cuda_cores() -> HashMap<String, usize> {
         ("Quadro M5000".to_string(), 2048),
         ("GeForce RTX 3090".to_string(), 10496),
         ("GeForce RTX 3080".to_string(), 8704),
+        ("GeForce RTX 3080 Ti".to_string(), 10240),
         ("GeForce RTX 3070".to_string(), 5888),
         ("GeForce RTX 2080 Ti".to_string(), 4352),
         ("GeForce RTX 2080 SUPER".to_string(), 3072),
@@ -39,6 +40,7 @@ fn cuda_cores() -> HashMap<String, usize> {
         ("GeForce GTX 1650".to_string(), 896),
         // CUDA appears to have a different device name
         ("NVIDIA GeForce RTX 3090".to_string(), 10496),
+        ("NVIDIA GeForce RTX 3080 Ti".to_string(), 10240),
         ("NVIDIA GeForce RTX 3080".to_string(), 8704),
         ("NVIDIA GeForce RTX 3070".to_string(), 5888),
         ("NVIDIA GeForce RTX 2080 Ti".to_string(), 4352),
