@@ -37,6 +37,21 @@ fn cuda_cores() -> HashMap<String, usize> {
         ("GeForce GTX 1060".to_string(), 1280),
         ("GeForce GTX 1650 SUPER".to_string(), 1280),
         ("GeForce GTX 1650".to_string(), 896),
+        // CUDA appears to have a different device name
+        ("NVIDIA GeForce RTX 3090".to_string(), 10496),
+        ("NVIDIA GeForce RTX 3080".to_string(), 8704),
+        ("NVIDIA GeForce RTX 3070".to_string(), 5888),
+        ("NVIDIA GeForce RTX 2080 Ti".to_string(), 4352),
+        ("NVIDIA GeForce RTX 2080 SUPER".to_string(), 3072),
+        ("NVIDIA GeForce RTX 2080".to_string(), 2944),
+        ("NVIDIA GeForce RTX 2070 SUPER".to_string(), 2560),
+        ("NVIDIA GeForce GTX 1080 Ti".to_string(), 3584),
+        ("NVIDIA GeForce GTX 1080".to_string(), 2560),
+        ("NVIDIA GeForce GTX 2060".to_string(), 1920),
+        ("NVIDIA GeForce GTX 1660 Ti".to_string(), 1536),
+        ("NVIDIA GeForce GTX 1060".to_string(), 1280),
+        ("NVIDIA GeForce GTX 1650 SUPER".to_string(), 1280),
+        ("NVIDIA GeForce GTX 1650".to_string(), 896),
     ]
     .into_iter()
     .collect();
