@@ -25,3 +25,4 @@ hex = "0.4.3"
 opencl3 = { version = "0.4.1", default-features = false, features = ["CL_VERSION_1_2"], optional = true }
 rustacuda = { package = "fil-rustacuda", version = "0.1.3", optional = true }
 once_cell = "1.8.0"
+temp-env = "0.2.0"

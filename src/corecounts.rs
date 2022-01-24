@@ -60,15 +60,16 @@ fn cuda_cores() -> HashMap<String, usize> {
 
     if let Ok(var) = env::var("RUST_GPU_TOOLS_CUSTOM_GPU") {
         for card in var.split(',') {
-            let splitted = card.split(':').collect::<Vec<_>>();
-            if splitted.len() != 2 {
+            let split = card.rsplitn(2, ':').collect::<Vec<_>>();
+            if split.len() != 2 {
                 panic!("Invalid RUST_GPU_TOOLS_CUSTOM_GPU!");
             }
-            let name = splitted[0].trim().to_string();
-            let cores: usize = splitted[1]
+            let name = split[1].trim().to_string();
+            let cores: usize = split[0]
                 .trim()
                 .parse()
                 .expect("Invalid RUST_GPU_TOOLS_CUSTOM_GPU!");
+
             info!("Adding \"{}\" to GPU list with {} CUDA cores.", name, cores);
             core_counts.insert(name, cores);
         }
@@ -79,8 +80,6 @@ fn cuda_cores() -> HashMap<String, usize> {
 
 #[cfg(test)]
 mod tests {
-    use std::env;
-
     #[test]
     fn get_cuda_cores() {
         let core_counts = super::cuda_cores();
@@ -97,12 +96,27 @@ mod tests {
 
     #[test]
     fn get_cuda_cores_custom() {
-        env::set_var(
+        temp_env::with_var(
             "RUST_GPU_TOOLS_CUSTOM_GPU",
-            "My custom GPU:12345,My other GPU:4444",
+            Some("My custom GPU:12345,My other GPU:4444"),
+            || {
+                let core_counts = super::cuda_cores();
+                let custom_core_count = *core_counts.get("My custom GPU").unwrap();
+                assert_eq!(custom_core_count, 12345);
+            },
         );
-        let core_counts = super::cuda_cores();
-        let custom_core_count = *core_counts.get("My custom GPU").unwrap();
-        assert_eq!(custom_core_count, 12345);
+    }
+
+    #[test]
+    fn get_cuda_cores_custom_with_colons() {
+        temp_env::with_var(
+            "RUST_GPU_TOOLS_CUSTOM_GPU",
+            Some("gfx906:sramecc-:xnack-:3840"),
+            || {
+                let core_counts = super::cuda_cores();
+                let custom_core_count = *core_counts.get("gfx906:sramecc-:xnack-").unwrap();
+                assert_eq!(custom_core_count, 3840);
+            },
+        );
     }
 }
