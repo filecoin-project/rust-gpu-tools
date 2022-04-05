@@ -1,7 +1,6 @@
 use std::convert::{TryFrom, TryInto};
 
 use log::{debug, warn};
-use opencl3::device::DeviceInfo::CL_DEVICE_GLOBAL_MEM_SIZE;
 use opencl3::device::CL_UUID_SIZE_KHR;
 use sha2::{Digest, Sha256};
 
@@ -55,19 +54,19 @@ pub fn cache_path(device: &Device, cl_source: &str) -> std::io::Result<std::path
         std::fs::create_dir(&path)?;
     }
     let mut hasher = Sha256::new();
-    hasher.input(device.name.as_bytes());
-    hasher.input(u16::from(device.pci_id).to_be_bytes());
-    hasher.input(<[u8; CL_UUID_SIZE_KHR]>::from(
+    hasher.update(device.name.as_bytes());
+    hasher.update(u16::from(device.pci_id).to_be_bytes());
+    hasher.update(<[u8; CL_UUID_SIZE_KHR]>::from(
         device.uuid.unwrap_or_default(),
     ));
-    hasher.input(cl_source.as_bytes());
-    let filename = format!("{}.bin", hex::encode(hasher.result()));
+    hasher.update(cl_source.as_bytes());
+    let filename = format!("{}.bin", hex::encode(hasher.finalize()));
     Ok(path.join(filename))
 }
 
 fn get_memory(d: &opencl3::device::Device) -> GPUResult<u64> {
     d.global_mem_size()
-        .map_err(|_| GPUError::DeviceInfoNotAvailable(CL_DEVICE_GLOBAL_MEM_SIZE))
+        .map_err(GPUError::DeviceInfoNotAvailable)
 }
 
 /// Get a list of all available and supported devices.

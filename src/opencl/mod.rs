@@ -11,7 +11,6 @@ use opencl3::context::Context;
 use opencl3::error_codes::ClError;
 use opencl3::kernel::ExecuteKernel;
 use opencl3::memory::CL_MEM_READ_WRITE;
-use opencl3::program::ProgramInfo::CL_PROGRAM_BINARIES;
 use opencl3::types::CL_BLOCKING;
 
 use log::debug;
@@ -159,7 +158,7 @@ impl Program {
             };
             let binaries = program
                 .get_binaries()
-                .map_err(|_| GPUError::ProgramInfoNotAvailable(CL_PROGRAM_BINARIES))?;
+                .map_err(GPUError::ProgramInfoNotAvailable)?;
             std::fs::write(cached, binaries[0].clone())?;
             Ok(prog)
         }
@@ -366,7 +365,7 @@ impl<T> KernelArgument for LocalBuffer<T> {
     fn push(&self, kernel: &mut Kernel) {
         kernel
             .builder
-            .set_arg_local_buffer::<T>(self.length * std::mem::size_of::<T>());
+            .set_arg_local_buffer(self.length * std::mem::size_of::<T>());
         kernel.num_local_buffers += 1;
     }
 }
