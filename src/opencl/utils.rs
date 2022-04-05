@@ -1,4 +1,4 @@
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryFrom;
 
 use log::{debug, warn};
 use opencl3::device::CL_UUID_SIZE_KHR;
@@ -36,15 +36,7 @@ fn get_pci_id(device: &opencl3::device::Device) -> GPUResult<PciId> {
 }
 
 fn get_uuid(device: &opencl3::device::Device) -> GPUResult<DeviceUuid> {
-    let uuid_vec = device.uuid_khr()?;
-    assert_eq!(
-        uuid_vec.len(),
-        CL_UUID_SIZE_KHR,
-        "opencl3 returned an invalid UUID: {:?}",
-        uuid_vec
-    );
-    // Unwrap is safe due to the assert
-    let uuid: [u8; CL_UUID_SIZE_KHR] = uuid_vec.try_into().unwrap();
+    let uuid = device.uuid_khr()?;
     Ok(uuid.into())
 }
 
