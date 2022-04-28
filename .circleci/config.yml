@@ -127,6 +127,15 @@ jobs:
           name: Run `add` example
           command: cargo run --example add
 
+  rustdoc:
+    executor: default
+    steps:
+      - *restore-workspace
+      - *restore-cache
+      - set-env-path
+      - run:
+          name: Run rustdoc
+          command: cargo rustdoc --all-features -- -D warnings
 
 workflows:
   version: 2.1
@@ -147,5 +156,8 @@ workflows:
           requires:
             - cargo_fetch
       - example:
+          requires:
+            - cargo_fetch
+      - rustdoc:
           requires:
             - cargo_fetch

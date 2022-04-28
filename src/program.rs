@@ -23,7 +23,7 @@ impl Program {
     /// `Program`.
     ///
     /// You need to pass in two closures, one for OpenCL, one for CUDA, both get their
-    /// corresponding program type as parameter. For convenience there is the [`define_closures`]
+    /// corresponding program type as parameter. For convenience there is the [`program_closures`]
     /// macro defined, which can help reducing code duplication by creating two closures out of
     /// a single one.
     ///
@@ -56,7 +56,7 @@ impl Program {
     /// `Program`.
     ///
     /// You need to pass in two closures, one for OpenCL, one for CUDA, both get their
-    /// corresponding program type as parameter. For convenience there is the [`define_closures`]
+    /// corresponding program type as parameter. For convenience there is the [`program_closures`]
     /// macro defined, which can help reducing code duplication by creating two closures out of
     /// a single one.
     ///
@@ -125,7 +125,7 @@ impl Program {
 ///
 /// This macro is used to be able to interact with rust-gpu-tools with unified code for both,
 /// CUDA and OpenCL, without the need to repeat the code. The input parameter is a `program` and
-/// it will be mapped to [`&cuda::Program`] and [`&opencl::Program`].
+/// it will be mapped to &[`cuda::Program`] and &[`opencl::Program`].
 ///
 /// The second parameter is a single arbitrary argument, which will be passed on into the closure.
 /// This is useful when you e.g. need to pass in a mutable reference. Such a reference cannot be
