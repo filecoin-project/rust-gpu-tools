@@ -1,5 +1,5 @@
 #[cfg(feature = "opencl")]
-use opencl3::{device::DeviceInfo, error_codes::ClError, program::ProgramInfo};
+use opencl3::error_codes::ClError;
 #[cfg(feature = "cuda")]
 use rustacuda::error::CudaError;
 
@@ -18,12 +18,12 @@ pub enum GPUError {
     /// Error for OpenCL `clGetProgramInfo()` call failures.
     #[cfg(feature = "opencl")]
     #[error("Program info not available!")]
-    ProgramInfoNotAvailable(ProgramInfo),
+    ProgramInfoNotAvailable(ClError),
 
     /// Error for OpenCL `clGetDeviceInfo()` call failures.
     #[cfg(feature = "opencl")]
     #[error("Device info not available!")]
-    DeviceInfoNotAvailable(DeviceInfo),
+    DeviceInfoNotAvailable(ClError),
 
     /// Error from the underlying `RustaCUDA` library, e.g. a memory allocation failure.
     #[cfg(feature = "cuda")]
