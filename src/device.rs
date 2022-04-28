@@ -16,7 +16,7 @@ use crate::cuda;
 use crate::opencl;
 
 /// The UUID of the devices returned by OpenCL as well as CUDA are always 16 bytes long.
-const UUID_SIZE: usize = 16;
+pub(crate) const UUID_SIZE: usize = 16;
 const AMD_DEVICE_VENDOR_STRING: &str = "Advanced Micro Devices, Inc.";
 const AMD_DEVICE_VENDOR_ID: u32 = 0x1002;
 // For some reason integrated AMD cards on Apple don't have the usual vendor name and ID

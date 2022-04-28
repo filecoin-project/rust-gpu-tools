@@ -22,7 +22,10 @@ lazy_static = "1.2"
 log = "0.4.11"
 hex = "0.4.3"
 
-opencl3 = { version = "0.6", default-features = false, features = ["CL_VERSION_1_2"], optional = true }
+#opencl3 = { version = "0.6", default-features = false, features = ["CL_VERSION_1_2"], optional = true }
+#opencl3 = { git = "https://github.com/kenba/opencl3", branch = "develop", default-features = false, features = ["CL_VERSION_1_2"], optional = true }
+opencl3 = { git = "https://github.com/vmx/opencl3", branch = "wip-openclsys", default-features = false, features = ["CL_VERSION_1_2"], optional = true }
+#opencl3 = { path = "../upstream/opencl3", default-features = false, features = ["CL_VERSION_1_2"], optional = true }
 rustacuda = { package = "fil-rustacuda", version = "0.1.3", optional = true }
 once_cell = "1.8.0"
 temp-env = "0.2.0"

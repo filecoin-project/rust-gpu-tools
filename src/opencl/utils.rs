@@ -1,10 +1,9 @@
 use std::convert::TryFrom;
 
 use log::{debug, warn};
-use opencl3::device::CL_UUID_SIZE_KHR;
 use sha2::{Digest, Sha256};
 
-use crate::device::{DeviceUuid, PciId, Vendor};
+use crate::device::{DeviceUuid, PciId, Vendor, UUID_SIZE};
 use crate::error::{GPUError, GPUResult};
 use crate::opencl::Device;
 
@@ -48,7 +47,7 @@ pub fn cache_path(device: &Device, cl_source: &str) -> std::io::Result<std::path
     let mut hasher = Sha256::new();
     hasher.update(device.name.as_bytes());
     hasher.update(u16::from(device.pci_id).to_be_bytes());
-    hasher.update(<[u8; CL_UUID_SIZE_KHR]>::from(
+    hasher.update(<[u8; UUID_SIZE]>::from(
         device.uuid.unwrap_or_default(),
     ));
     hasher.update(cl_source.as_bytes());
