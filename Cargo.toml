@@ -12,7 +12,7 @@ repository = "https://github.com/filecoin-project/rust-gpu-tools"
 [features]
 default = ["opencl", "cuda"]
 opencl = ["opencl3"]
-cuda = ["rustacuda"]
+cuda = ["cust"]
 
 [dependencies]
 dirs = "4.0.0"
@@ -23,6 +23,6 @@ log = "0.4.11"
 hex = "0.4.3"
 
 opencl3 = { version = "0.9.1", default-features = false, features = ["CL_VERSION_1_2"], optional = true }
-rustacuda = { package = "fil-rustacuda", version = "0.1.3", optional = true }
+cust = { git = "https://github.com/vmx/rust-cuda", branch = "uuid-more-portable", optional = true }
 once_cell = "1.8.0"
 temp-env = "0.2.0"

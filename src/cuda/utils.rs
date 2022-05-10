@@ -11,7 +11,7 @@ use crate::error::{GPUError, GPUResult};
 // directly, they are only accessed through [`cuda::Device`] which contains an `UnownedContext`.
 // A device cannot have an own context itself, as then it couldn't be cloned, but that is needed
 // for creating the kernels.
-pub(crate) struct CudaContexts(Vec<rustacuda::context::Context>);
+pub(crate) struct CudaContexts(Vec<cust::context::legacy::Context>);
 unsafe impl Sync for CudaContexts {}
 
 /// The PCI-ID is the combination of the PCI Bus ID and PCI Device ID.
@@ -23,27 +23,27 @@ unsafe impl Sync for CudaContexts {}
 ///     || └└-- Device ID
 ///     └└-- Bus ID
 /// ```
-fn get_pci_id(device: &rustacuda::device::Device) -> Result<PciId, GPUError> {
-    let bus_id = device.get_attribute(rustacuda::device::DeviceAttribute::PciBusId)? as u16;
-    let device_id = device.get_attribute(rustacuda::device::DeviceAttribute::PciDeviceId)? as u16;
+fn get_pci_id(device: &cust::device::Device) -> Result<PciId, GPUError> {
+    let bus_id = device.get_attribute(cust::device::DeviceAttribute::PciBusId)? as u16;
+    let device_id = device.get_attribute(cust::device::DeviceAttribute::PciDeviceId)? as u16;
     let pci_id = (bus_id << 8) | device_id;
     Ok(pci_id.into())
 }
 
-fn get_memory(d: &rustacuda::device::Device) -> GPUResult<u64> {
+fn get_memory(d: &cust::device::Device) -> GPUResult<u64> {
     let memory = d.total_memory()?;
     Ok(u64::try_from(memory).expect("Platform must be <= 64-bit"))
 }
 
-fn get_compute_units(d: &rustacuda::device::Device) -> GPUResult<u32> {
-    let compute_units = d.get_attribute(rustacuda::device::DeviceAttribute::MultiprocessorCount)?;
+fn get_compute_units(d: &cust::device::Device) -> GPUResult<u32> {
+    let compute_units = d.get_attribute(cust::device::DeviceAttribute::MultiprocessorCount)?;
     Ok(u32::try_from(compute_units).expect("The number of units is always positive"))
 }
 
 /// Get the major an minor version of the compute capability.
-fn get_compute_capability(d: &rustacuda::device::Device) -> GPUResult<(u32, u32)> {
-    let major = d.get_attribute(rustacuda::device::DeviceAttribute::ComputeCapabilityMajor)?;
-    let minor = d.get_attribute(rustacuda::device::DeviceAttribute::ComputeCapabilityMinor)?;
+fn get_compute_capability(d: &cust::device::Device) -> GPUResult<(u32, u32)> {
+    let major = d.get_attribute(cust::device::DeviceAttribute::ComputeCapabilityMajor)?;
+    let minor = d.get_attribute(cust::device::DeviceAttribute::ComputeCapabilityMinor)?;
     Ok((
         u32::try_from(major).expect("The compute capability major version is always positive"),
         u32::try_from(minor).expect("The compute capability minor version is always positive"),
@@ -59,17 +59,17 @@ pub(crate) fn build_device_list() -> (Vec<Device>, CudaContexts) {
     let mut devices_without_pci_id = Vec::new();
     let mut contexts = Vec::new();
 
-    rustacuda::init(rustacuda::CudaFlags::empty())
+    cust::init(cust::CudaFlags::empty())
         .map_err(Into::into)
         .and_then(|_| {
-            for device in rustacuda::device::Device::devices()? {
+            for device in cust::device::Device::devices()? {
                 let device = device?;
-                let owned_context = rustacuda::context::Context::create_and_push(
-                    rustacuda::context::ContextFlags::MAP_HOST
-                        | rustacuda::context::ContextFlags::SCHED_AUTO,
+                let owned_context = cust::context::legacy::Context::create_and_push(
+                    cust::context::legacy::ContextFlags::MAP_HOST
+                        | cust::context::legacy::ContextFlags::SCHED_AUTO,
                     device,
                 )?;
-                rustacuda::context::ContextStack::pop()?;
+                cust::context::legacy::ContextStack::pop()?;
 
                 let vendor = Vendor::Nvidia;
                 let name = device.name()?;

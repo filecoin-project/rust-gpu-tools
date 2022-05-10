@@ -11,13 +11,14 @@
 pub(crate) mod utils;
 
 use std::convert::TryFrom;
-use std::ffi::{c_void, CStr, CString};
+use std::ffi::c_void;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::path::Path;
 
+use cust::memory::{AsyncCopyDestination, DeviceBuffer};
+use cust::stream::{Stream, StreamFlags};
 use log::debug;
-use rustacuda::memory::{AsyncCopyDestination, DeviceBuffer};
-use rustacuda::stream::{Stream, StreamFlags};
 
 use crate::device::{DeviceUuid, PciId, Vendor};
 use crate::error::{GPUError, GPUResult};
@@ -45,8 +46,8 @@ pub struct Device {
     compute_capability: (u32, u32),
     pci_id: PciId,
     uuid: Option<DeviceUuid>,
-    device: rustacuda::device::Device,
-    context: rustacuda::context::UnownedContext,
+    device: cust::device::Device,
+    context: cust::context::legacy::UnownedContext,
 }
 
 impl Hash for Device {
@@ -117,8 +118,8 @@ impl Device {
 #[allow(rustdoc::broken_intra_doc_links)]
 #[derive(Debug)]
 pub struct Program {
-    context: rustacuda::context::UnownedContext,
-    module: rustacuda::module::Module,
+    context: cust::context::legacy::UnownedContext,
+    module: cust::module::Module,
     stream: Stream,
     device_name: String,
 }
@@ -130,10 +131,10 @@ impl Program {
     }
 
     /// Creates a program for a specific device from a compiled CUDA binary file.
-    pub fn from_binary(device: &Device, filename: &CStr) -> GPUResult<Program> {
+    pub fn from_file<P: AsRef<Path>>(device: &Device, path: P) -> GPUResult<Program> {
         debug!("Creating CUDA program from binary file.");
-        rustacuda::context::CurrentContext::set_current(&device.context)?;
-        let module = rustacuda::module::Module::load_from_file(filename).map_err(|err| {
+        cust::context::CurrentContext::set_current(&device.context)?;
+        let module = cust::module::Module::from_file(path).map_err(|err| {
             Self::pop_context();
             err
         })?;
@@ -151,11 +152,11 @@ impl Program {
         Ok(prog)
     }
 
-    /// Creates a program for a specific device from a compiled CUDA binary.
+    /// Creates a program for a specific device from a compiled CUDA fatbin binary.
     pub fn from_bytes(device: &Device, bytes: &[u8]) -> GPUResult<Program> {
         debug!("Creating CUDA program from bytes.");
-        rustacuda::context::CurrentContext::set_current(&device.context)?;
-        let module = rustacuda::module::Module::load_from_bytes(bytes).map_err(|err| {
+        cust::context::CurrentContext::set_current(&device.context)?;
+        let module = cust::module::Module::from_fatbin(bytes, &[]).map_err(|err| {
             Self::pop_context();
             err
         })?;
@@ -227,8 +228,7 @@ impl Program {
     /// `local_work_size` sized thread groups. So the total number of threads is
     /// `global_work_size * local_work_size`.
     pub fn create_kernel(&self, name: &str, gws: usize, lws: usize) -> GPUResult<Kernel> {
-        let function_name = CString::new(name).expect("Kernel name must not contain nul bytes");
-        let function = self.module.get_function(&function_name)?;
+        let function = self.module.get_function(name)?;
 
         Ok(Kernel {
             function,
@@ -288,7 +288,7 @@ impl Program {
         F: FnOnce(&Self, A) -> Result<R, E>,
         E: From<GPUError>,
     {
-        rustacuda::context::CurrentContext::set_current(&self.context).map_err(Into::into)?;
+        cust::context::CurrentContext::set_current(&self.context).map_err(Into::into)?;
         let result = fun(self, arg);
         Self::pop_context();
         result
@@ -298,7 +298,7 @@ impl Program {
     ///
     /// It panics as it's an unrecoverable error.
     fn pop_context() {
-        rustacuda::context::ContextStack::pop().expect("Cannot remove context.");
+        cust::context::legacy::ContextStack::pop().expect("Cannot remove context.");
     }
 }
 
@@ -356,7 +356,7 @@ impl<T> KernelArgument for LocalBuffer<T> {
 
 /// A kernel that can be executed.
 pub struct Kernel<'a> {
-    function: rustacuda::function::Function<'a>,
+    function: cust::function::Function<'a>,
     global_work_size: usize,
     local_work_size: usize,
     stream: &'a Stream,

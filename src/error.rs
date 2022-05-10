@@ -1,7 +1,7 @@
+#[cfg(feature = "cuda")]
+use cust::error::CudaError;
 #[cfg(feature = "opencl")]
 use opencl3::error_codes::ClError;
-#[cfg(feature = "cuda")]
-use rustacuda::error::CudaError;
 
 /// Error types of this library.
 #[derive(thiserror::Error, Debug)]
