@@ -38,6 +38,8 @@ pub struct Device {
     name: String,
     /// The total memory of the GPU in bytes.
     memory: u64,
+    /// Number of streaming multiprocessors.
+    compute_units: u32,
     pci_id: PciId,
     uuid: Option<DeviceUuid>,
     device: rustacuda::device::Device,
@@ -80,6 +82,11 @@ impl Device {
     /// Returns the memory of the GPU in bytes.
     pub fn memory(&self) -> u64 {
         self.memory
+    }
+
+    /// Returns the number of compute units of the GPU.
+    pub fn compute_units(&self) -> u32 {
+        self.compute_units
     }
 
     /// Returns the PCI-ID of the GPU, see the [`PciId`] type for more information.
