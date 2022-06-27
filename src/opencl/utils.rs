@@ -66,6 +66,17 @@ fn get_compute_units(d: &opencl3::device::Device) -> GPUResult<u32> {
         .map_err(GPUError::DeviceInfoNotAvailable)
 }
 
+/// Get the major an minor version of the compute capabilitiy (only available on Nvidia GPUs).
+fn get_compute_capability(d: &opencl3::device::Device) -> GPUResult<(u32, u32)> {
+    let major = d
+        .compute_capability_major_nv()
+        .map_err(GPUError::DeviceInfoNotAvailable)?;
+    let minor = d
+        .compute_capability_major_nv()
+        .map_err(GPUError::DeviceInfoNotAvailable)?;
+    Ok((major, minor))
+}
+
 /// Get a list of all available and supported devices.
 ///
 /// If there is a failure retrieving a device, it won't lead to a hard error, but an error will be
@@ -107,6 +118,7 @@ pub(crate) fn build_device_list() -> Vec<Device> {
                                 Ok(units) => units,
                                 Err(error) => return Some(Err(error)),
                             };
+                            let compute_capability = get_compute_capability(&device).ok();
                             let uuid = get_uuid(&device).ok();
 
                             // If a device doesn't have a PCI-ID, add those later to the list of
@@ -118,6 +130,7 @@ pub(crate) fn build_device_list() -> Vec<Device> {
                                         name,
                                         memory,
                                         compute_units,
+                                        compute_capability,
                                         pci_id,
                                         uuid,
                                         device,
@@ -132,6 +145,7 @@ pub(crate) fn build_device_list() -> Vec<Device> {
                                         name,
                                         memory,
                                         compute_units,
+                                        compute_capability,
                                         pci_id,
                                         uuid,
                                         device,

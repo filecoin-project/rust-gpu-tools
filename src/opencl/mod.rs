@@ -41,6 +41,8 @@ pub struct Device {
     memory: u64,
     /// The number of parallel compute units.
     compute_units: u32,
+    /// Major and minor version of the compute capabilitiy (only available on Nvidia GPUs).
+    compute_capability: Option<(u32, u32)>,
     pci_id: PciId,
     uuid: Option<DeviceUuid>,
     device: opencl3::device::Device,
@@ -87,6 +89,12 @@ impl Device {
     /// Returns the number of compute units of the GPU.
     pub fn compute_units(&self) -> u32 {
         self.compute_units
+    }
+
+    /// Returns the major and minor version of the compute capability (only available on Nvidia
+    /// GPUs).
+    pub fn compute_capability(&self) -> Option<(u32, u32)> {
+        self.compute_capability
     }
 
     /// Returns the PCI-ID of the GPU, see the [`PciId`] type for more information.

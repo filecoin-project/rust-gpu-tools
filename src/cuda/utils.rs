@@ -40,6 +40,16 @@ fn get_compute_units(d: &rustacuda::device::Device) -> GPUResult<u32> {
     Ok(u32::try_from(compute_units).expect("The number of units is always positive"))
 }
 
+/// Get the major an minor version of the compute capability.
+fn get_compute_capability(d: &rustacuda::device::Device) -> GPUResult<(u32, u32)> {
+    let major = d.get_attribute(rustacuda::device::DeviceAttribute::ComputeCapabilityMajor)?;
+    let minor = d.get_attribute(rustacuda::device::DeviceAttribute::ComputeCapabilityMinor)?;
+    Ok((
+        u32::try_from(major).expect("The compute capability major version is always positive"),
+        u32::try_from(minor).expect("The compute capability minor version is always positive"),
+    ))
+}
+
 /// Get a list of all available and supported devices.
 ///
 /// If there is a failure initializing CUDA or retrieving a device, it won't lead to a hard error,
@@ -65,6 +75,7 @@ pub(crate) fn build_device_list() -> (Vec<Device>, CudaContexts) {
                 let name = device.name()?;
                 let memory = get_memory(&device)?;
                 let compute_units = get_compute_units(&device)?;
+                let compute_capability = get_compute_capability(&device)?;
                 let uuid = device.uuid().ok().map(Into::into);
                 let context = owned_context.get_unowned();
 
@@ -79,6 +90,7 @@ pub(crate) fn build_device_list() -> (Vec<Device>, CudaContexts) {
                             name,
                             memory,
                             compute_units,
+                            compute_capability,
                             pci_id,
                             uuid,
                             device,
@@ -93,6 +105,7 @@ pub(crate) fn build_device_list() -> (Vec<Device>, CudaContexts) {
                             name,
                             memory,
                             compute_units,
+                            compute_capability,
                             pci_id,
                             uuid,
                             device,
