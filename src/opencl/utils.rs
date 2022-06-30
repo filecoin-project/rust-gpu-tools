@@ -61,6 +61,11 @@ fn get_memory(d: &opencl3::device::Device) -> GPUResult<u64> {
         .map_err(GPUError::DeviceInfoNotAvailable)
 }
 
+fn get_compute_units(d: &opencl3::device::Device) -> GPUResult<u32> {
+    d.max_compute_units()
+        .map_err(GPUError::DeviceInfoNotAvailable)
+}
+
 /// Get a list of all available and supported devices.
 ///
 /// If there is a failure retrieving a device, it won't lead to a hard error, but an error will be
@@ -98,6 +103,10 @@ pub(crate) fn build_device_list() -> Vec<Device> {
                                 Ok(memory) => memory,
                                 Err(error) => return Some(Err(error)),
                             };
+                            let compute_units = match get_compute_units(&device) {
+                                Ok(units) => units,
+                                Err(error) => return Some(Err(error)),
+                            };
                             let uuid = get_uuid(&device).ok();
 
                             // If a device doesn't have a PCI-ID, add those later to the list of
@@ -108,6 +117,7 @@ pub(crate) fn build_device_list() -> Vec<Device> {
                                         vendor,
                                         name,
                                         memory,
+                                        compute_units,
                                         pci_id,
                                         uuid,
                                         device,
@@ -121,6 +131,7 @@ pub(crate) fn build_device_list() -> Vec<Device> {
                                         vendor,
                                         name,
                                         memory,
+                                        compute_units,
                                         pci_id,
                                         uuid,
                                         device,

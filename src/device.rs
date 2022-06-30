@@ -233,6 +233,7 @@ pub struct Device {
     vendor: Vendor,
     name: String,
     memory: u64,
+    compute_units: u32,
     // All devices have a PCI ID. It is used as fallback in case there is not UUID.
     pci_id: PciId,
     uuid: Option<DeviceUuid>,
@@ -256,6 +257,11 @@ impl Device {
     /// Returns the memory of the GPU in bytes.
     pub fn memory(&self) -> u64 {
         self.memory
+    }
+
+    /// Returns the number of compute units of the GPU.
+    pub fn compute_units(&self) -> u32 {
+        self.compute_units
     }
 
     /// Returns the best possible unique identifier, a UUID is preferred over a PCI ID.
@@ -354,6 +360,7 @@ fn build_device_list() -> (Vec<Device>, cuda::utils::CudaContexts) {
             vendor: opencl_device.vendor(),
             name: opencl_device.name(),
             memory: opencl_device.memory(),
+            compute_units: opencl_device.compute_units(),
             pci_id: opencl_device.pci_id(),
             uuid: opencl_device.uuid(),
             opencl: Some(opencl_device),
@@ -369,6 +376,10 @@ fn build_device_list() -> (Vec<Device>, cuda::utils::CudaContexts) {
                 {
                     if device.memory() != cuda_devices[ii].memory() {
                         warn!("OpenCL and CUDA report different amounts of memory for a device with the same identifier");
+                        break;
+                    }
+                    if device.compute_units() != cuda_devices[ii].compute_units() {
+                        warn!("OpenCL and CUDA report different amounts of compute units for a device with the same identifier");
                         break;
                     }
                     // Move the CUDA device out of the vector
@@ -388,6 +399,7 @@ fn build_device_list() -> (Vec<Device>, cuda::utils::CudaContexts) {
             vendor: cuda_device.vendor(),
             name: cuda_device.name(),
             memory: cuda_device.memory(),
+            compute_units: cuda_device.compute_units(),
             pci_id: cuda_device.pci_id(),
             uuid: cuda_device.uuid(),
             cuda: Some(cuda_device),
@@ -413,6 +425,7 @@ fn build_device_list() -> (Vec<Device>, ()) {
             vendor: device.vendor(),
             name: device.name(),
             memory: device.memory(),
+            compute_units: device.compute_units(),
             pci_id: device.pci_id(),
             uuid: device.uuid(),
             opencl: Some(device),

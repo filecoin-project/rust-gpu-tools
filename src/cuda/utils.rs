@@ -35,6 +35,11 @@ fn get_memory(d: &rustacuda::device::Device) -> GPUResult<u64> {
     Ok(u64::try_from(memory).expect("Platform must be <= 64-bit"))
 }
 
+fn get_compute_units(d: &rustacuda::device::Device) -> GPUResult<u32> {
+    let compute_units = d.get_attribute(rustacuda::device::DeviceAttribute::MultiprocessorCount)?;
+    Ok(u32::try_from(compute_units).expect("The number of units is always positive"))
+}
+
 /// Get a list of all available and supported devices.
 ///
 /// If there is a failure initializing CUDA or retrieving a device, it won't lead to a hard error,
@@ -59,6 +64,7 @@ pub(crate) fn build_device_list() -> (Vec<Device>, CudaContexts) {
                 let vendor = Vendor::Nvidia;
                 let name = device.name()?;
                 let memory = get_memory(&device)?;
+                let compute_units = get_compute_units(&device)?;
                 let uuid = device.uuid().ok().map(Into::into);
                 let context = owned_context.get_unowned();
 
@@ -72,6 +78,7 @@ pub(crate) fn build_device_list() -> (Vec<Device>, CudaContexts) {
                             vendor,
                             name,
                             memory,
+                            compute_units,
                             pci_id,
                             uuid,
                             device,
@@ -85,6 +92,7 @@ pub(crate) fn build_device_list() -> (Vec<Device>, CudaContexts) {
                             vendor,
                             name,
                             memory,
+                            compute_units,
                             pci_id,
                             uuid,
                             device,
