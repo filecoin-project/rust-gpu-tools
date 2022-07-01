@@ -234,6 +234,8 @@ pub struct Device {
     name: String,
     memory: u64,
     compute_units: u32,
+    /// Major and minor version of the compute capabilitiy (only available on Nvidia GPUs).
+    compute_capability: Option<(u32, u32)>,
     // All devices have a PCI ID. It is used as fallback in case there is not UUID.
     pci_id: PciId,
     uuid: Option<DeviceUuid>,
@@ -262,6 +264,12 @@ impl Device {
     /// Returns the number of compute units of the GPU.
     pub fn compute_units(&self) -> u32 {
         self.compute_units
+    }
+
+    /// Returns the major and minor version of the compute capability (only available on Nvidia
+    /// GPUs).
+    pub fn compute_capability(&self) -> Option<(u32, u32)> {
+        self.compute_capability
     }
 
     /// Returns the best possible unique identifier, a UUID is preferred over a PCI ID.
@@ -361,6 +369,7 @@ fn build_device_list() -> (Vec<Device>, cuda::utils::CudaContexts) {
             name: opencl_device.name(),
             memory: opencl_device.memory(),
             compute_units: opencl_device.compute_units(),
+            compute_capability: opencl_device.compute_capability(),
             pci_id: opencl_device.pci_id(),
             uuid: opencl_device.uuid(),
             opencl: Some(opencl_device),
@@ -400,6 +409,7 @@ fn build_device_list() -> (Vec<Device>, cuda::utils::CudaContexts) {
             name: cuda_device.name(),
             memory: cuda_device.memory(),
             compute_units: cuda_device.compute_units(),
+            compute_capability: Some(cuda_device.compute_capability()),
             pci_id: cuda_device.pci_id(),
             uuid: cuda_device.uuid(),
             cuda: Some(cuda_device),
@@ -426,6 +436,7 @@ fn build_device_list() -> (Vec<Device>, ()) {
             name: device.name(),
             memory: device.memory(),
             compute_units: device.compute_units(),
+            compute_capability: device.compute_capability(),
             pci_id: device.pci_id(),
             uuid: device.uuid(),
             opencl: Some(device),
