@@ -137,6 +137,7 @@ impl Program {
 
     /// Creates a program for a specific device from OpenCL source code.
     pub fn from_opencl(device: &Device, src: &str) -> GPUResult<Program> {
+        debug!("Creating OpenCL program from source.");
         let cached = utils::cache_path(device, src)?;
         if std::path::Path::exists(&cached) {
             let bin = std::fs::read(cached)?;
@@ -181,6 +182,7 @@ impl Program {
 
     /// Creates a program for a specific device from a compiled OpenCL binary.
     pub fn from_binary(device: &Device, bin: Vec<u8>) -> GPUResult<Program> {
+        debug!("Creating OpenCL program from binary.");
         let context = Context::from_device(&device.device)?;
         let bins = vec![&bin[..]];
         let mut program =
