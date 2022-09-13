@@ -15,6 +15,7 @@ use std::ffi::{c_void, CStr, CString};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
+use log::debug;
 use rustacuda::memory::{AsyncCopyDestination, DeviceBuffer};
 use rustacuda::stream::{Stream, StreamFlags};
 
@@ -130,6 +131,7 @@ impl Program {
 
     /// Creates a program for a specific device from a compiled CUDA binary file.
     pub fn from_binary(device: &Device, filename: &CStr) -> GPUResult<Program> {
+        debug!("Creating CUDA program from binary file.");
         rustacuda::context::CurrentContext::set_current(&device.context)?;
         let module = rustacuda::module::Module::load_from_file(filename).map_err(|err| {
             Self::pop_context();
@@ -151,6 +153,7 @@ impl Program {
 
     /// Creates a program for a specific device from a compiled CUDA binary.
     pub fn from_bytes(device: &Device, bytes: &[u8]) -> GPUResult<Program> {
+        debug!("Creating CUDA program from bytes.");
         rustacuda::context::CurrentContext::set_current(&device.context)?;
         let module = rustacuda::module::Module::load_from_bytes(bytes).map_err(|err| {
             Self::pop_context();
