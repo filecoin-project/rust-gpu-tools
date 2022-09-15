@@ -69,7 +69,7 @@ impl TryFrom<&str> for PciId {
 
     fn try_from(pci_id: &str) -> GPUResult<Self> {
         let mut bytes = [0; mem::size_of::<u16>()];
-        hex::decode_to_slice(pci_id.replace(":", ""), &mut bytes).map_err(|_| {
+        hex::decode_to_slice(pci_id.replace(':', ""), &mut bytes).map_err(|_| {
             GPUError::InvalidId(format!(
                 "Cannot parse PCI ID, expected hex-encoded string formated as aa:bb, got {0}.",
                 pci_id
@@ -111,7 +111,7 @@ impl TryFrom<&str> for DeviceUuid {
 
     fn try_from(uuid: &str) -> GPUResult<Self> {
         let mut bytes = [0; UUID_SIZE];
-        hex::decode_to_slice(uuid.replace("-", ""), &mut bytes)
+        hex::decode_to_slice(uuid.replace('-', ""), &mut bytes)
             .map_err(|_| {
                 GPUError::InvalidId(format!("Cannot parse UUID, expected hex-encoded string formated as aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee, got {0}.", uuid))
             })?;
@@ -137,7 +137,7 @@ impl fmt::Display for DeviceUuid {
 
 impl fmt::Debug for DeviceUuid {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.to_string())
+        write!(f, "{}", self)
     }
 }
 
