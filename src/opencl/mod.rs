@@ -121,7 +121,7 @@ impl Device {
 ///
 /// The majority of methods are the same as [`crate::cuda::Program`], so you can write code using this
 /// API, which will then work with OpenCL as well as CUDA kernels.
-#[allow(broken_intra_doc_links)]
+#[allow(rustdoc::broken_intra_doc_links)]
 pub struct Program {
     device_name: String,
     queue: CommandQueue,
@@ -157,7 +157,7 @@ impl Program {
                 "Building kernel ({}) from source: done.",
                 cached.to_string_lossy()
             );
-            let queue = CommandQueue::create(&context, context.default_device(), 0)?;
+            let queue = CommandQueue::create_default(&context, 0)?;
             let kernels = opencl3::kernel::create_program_kernels(&program)?;
             let kernels_by_name = kernels
                 .into_iter()
@@ -185,13 +185,14 @@ impl Program {
         debug!("Creating OpenCL program from binary.");
         let context = Context::from_device(&device.device)?;
         let bins = vec![&bin[..]];
-        let mut program =
-            opencl3::program::Program::create_from_binary(&context, context.devices(), &bins)?;
+        let mut program = unsafe {
+            opencl3::program::Program::create_from_binary(&context, context.devices(), &bins)
+        }?;
         if let Err(build_error) = program.build(context.devices(), "") {
             let log = program.get_build_log(context.devices()[0])?;
             return Err(GPUError::Opencl3(build_error, Some(log)));
         }
-        let queue = CommandQueue::create(&context, context.default_device(), 0)?;
+        let queue = CommandQueue::create_default(&context, 0)?;
         let kernels = opencl3::kernel::create_program_kernels(&program)?;
         let kernels_by_name = kernels
             .into_iter()
@@ -248,21 +249,25 @@ impl Program {
         // The underlying buffer is `u8`, hence we need the number of bytes.
         let bytes_len = length * std::mem::size_of::<T>();
 
-        let mut buffer = opencl3::memory::Buffer::create(
-            &self.context,
-            CL_MEM_READ_WRITE,
-            bytes_len,
-            ptr::null_mut(),
-        )?;
+        let mut buffer = unsafe {
+            opencl3::memory::Buffer::create(
+                &self.context,
+                CL_MEM_READ_WRITE,
+                bytes_len,
+                ptr::null_mut(),
+            )?
+        };
         // Transmuting types is safe as long a sizes match.
         let bytes = unsafe {
             std::slice::from_raw_parts(slice.as_ptr() as *const T as *const u8, bytes_len)
         };
         // Write some data right-away. This makes a significant performance different.
-        self.queue
-            .enqueue_write_buffer(&mut buffer, CL_BLOCKING, 0, &[0u8], &[])?;
-        self.queue
-            .enqueue_write_buffer(&mut buffer, CL_BLOCKING, 0, &bytes, &[])?;
+        unsafe {
+            self.queue
+                .enqueue_write_buffer(&mut buffer, CL_BLOCKING, 0, &[0u8], &[])?;
+            self.queue
+                .enqueue_write_buffer(&mut buffer, CL_BLOCKING, 0, bytes, &[])?;
+        };
 
         Ok(Buffer::<T> {
             buffer,
@@ -287,7 +292,7 @@ impl Program {
             .kernels_by_name
             .get(name)
             .ok_or_else(|| GPUError::KernelNotFound(name.to_string()))?;
-        let mut builder = ExecuteKernel::new(&kernel);
+        let mut builder = ExecuteKernel::new(kernel);
         builder.set_global_work_size(global_work_size * local_work_size);
         builder.set_local_work_size(local_work_size);
         Ok(Kernel {
@@ -314,9 +319,10 @@ impl Program {
                 data.len() * std::mem::size_of::<T>(),
             )
         };
-        self.queue
-            .enqueue_write_buffer(&mut buffer.buffer, CL_BLOCKING, 0, &bytes, &[])?;
-
+        unsafe {
+            self.queue
+                .enqueue_write_buffer(&mut buffer.buffer, CL_BLOCKING, 0, bytes, &[])?;
+        }
         Ok(())
     }
 
@@ -325,15 +331,16 @@ impl Program {
         assert!(data.len() <= buffer.length, "Buffer is too small");
 
         // It is safe as long as the sizes match.
-        let mut bytes = unsafe {
+        let bytes = unsafe {
             std::slice::from_raw_parts_mut(
                 data.as_mut_ptr() as *mut T as *mut u8,
                 data.len() * std::mem::size_of::<T>(),
             )
         };
-        self.queue
-            .enqueue_read_buffer(&buffer.buffer, CL_BLOCKING, 0, &mut bytes, &[])?;
-
+        unsafe {
+            self.queue
+                .enqueue_read_buffer(&buffer.buffer, CL_BLOCKING, 0, bytes, &[])?;
+        };
         Ok(())
     }
 
@@ -362,27 +369,35 @@ pub trait KernelArgument {
 
 impl<T> KernelArgument for Buffer<T> {
     fn push(&self, kernel: &mut Kernel) {
-        kernel.builder.set_arg(&self.buffer);
+        unsafe {
+            kernel.builder.set_arg(&self.buffer);
+        }
     }
 }
 
 impl KernelArgument for i32 {
     fn push(&self, kernel: &mut Kernel) {
-        kernel.builder.set_arg(self);
+        unsafe {
+            kernel.builder.set_arg(self);
+        }
     }
 }
 
 impl KernelArgument for u32 {
     fn push(&self, kernel: &mut Kernel) {
-        kernel.builder.set_arg(self);
+        unsafe {
+            kernel.builder.set_arg(self);
+        }
     }
 }
 
 impl<T> KernelArgument for LocalBuffer<T> {
     fn push(&self, kernel: &mut Kernel) {
-        kernel
-            .builder
-            .set_arg_local_buffer(self.length * std::mem::size_of::<T>());
+        unsafe {
+            kernel
+                .builder
+                .set_arg_local_buffer(self.length * std::mem::size_of::<T>());
+        }
         kernel.num_local_buffers += 1;
     }
 }
@@ -431,7 +446,9 @@ impl<'a> Kernel<'a> {
                 "There cannot be more than one `LocalBuffer`.".to_string(),
             ));
         }
-        self.builder.enqueue_nd_range(&self.queue)?;
+        unsafe {
+            self.builder.enqueue_nd_range(self.queue)?;
+        }
         Ok(())
     }
 }
