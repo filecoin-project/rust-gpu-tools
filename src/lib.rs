@@ -1,18 +1,5 @@
 //! Abstraction layer for OpenCL and CUDA.
 //!
-//! Environment variables
-//! ---------------------
-//!
-//! - `RUST_GPU_TOOLS_CUSTOM_GPU`
-//!
-//!    rust-gpu-tools has a hard-coded list of GPUs and their CUDA core count. If your card is not
-//!    part of that list, you can add it via `RUST_GPU_TOOLS_CUSTOM_GPU`. The value is a comma
-//!    separated list of `name:cores`. Example:
-//!
-//!    ```text
-//!    RUST_GPU_TOOLS_CUSTOM_GPU="GeForce RTX 2080 Ti:4352,GeForce GTX 1060:1280"
-//!    ```
-//!
 //! Feature flags
 //! -------------
 //!
@@ -23,7 +10,6 @@
 
 #![warn(missing_docs)]
 
-mod corecounts;
 mod device;
 mod error;
 #[cfg(any(feature = "cuda", feature = "opencl"))]
@@ -34,7 +20,6 @@ pub mod cuda;
 #[cfg(feature = "opencl")]
 pub mod opencl;
 
-pub use corecounts::CUDA_CORES;
 pub use device::{Device, DeviceUuid, Framework, PciId, UniqueId, Vendor};
 pub use error::GPUError;
 #[cfg(any(feature = "cuda", feature = "opencl"))]
