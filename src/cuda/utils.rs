@@ -93,7 +93,6 @@ pub(crate) fn build_device_list() -> (Vec<Device>, CudaContexts) {
                             compute_capability,
                             pci_id,
                             uuid,
-                            device,
                             context,
                         });
                     }
@@ -108,7 +107,6 @@ pub(crate) fn build_device_list() -> (Vec<Device>, CudaContexts) {
                             compute_capability,
                             pci_id,
                             uuid,
-                            device,
                             context,
                         });
                     }

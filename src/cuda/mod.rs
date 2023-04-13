@@ -45,7 +45,6 @@ pub struct Device {
     compute_capability: (u32, u32),
     pci_id: PciId,
     uuid: Option<DeviceUuid>,
-    device: rustacuda::device::Device,
     context: rustacuda::context::UnownedContext,
 }
 
