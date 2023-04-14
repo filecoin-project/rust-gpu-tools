@@ -19,7 +19,6 @@ cuda = ["rustacuda"]
 dirs = "5.0.0"
 sha2 = "0.10"
 thiserror = "1.0.10"
-lazy_static = "1.2"
 log = "0.4.11"
 hex = "0.4.3"
 

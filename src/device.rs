@@ -1,9 +1,9 @@
 use std::fmt;
 
-use lazy_static::lazy_static;
 use log::debug;
 #[cfg(all(feature = "opencl", feature = "cuda"))]
 use log::warn;
+use once_cell::sync::Lazy;
 
 use std::convert::TryFrom;
 use std::mem;
@@ -25,19 +25,15 @@ const AMD_DEVICE_ON_APPLE_VENDOR_ID: u32 = 0x1021d00;
 const NVIDIA_DEVICE_VENDOR_STRING: &str = "NVIDIA Corporation";
 const NVIDIA_DEVICE_VENDOR_ID: u32 = 0x10de;
 
+// The owned CUDA contexts are stored globally. Each devives contains an unowned reference, so
+// that devices can be cloned.
 #[cfg(feature = "cuda")]
-lazy_static! {
-    // The owned CUDA contexts are stored globally. Each devives contains an unowned reference,
-    // so that devices can be cloned.
-    static ref DEVICES: (Vec<Device>, cuda::utils::CudaContexts) = build_device_list();
-}
+static DEVICES: Lazy<(Vec<Device>, cuda::utils::CudaContexts)> = Lazy::new(build_device_list);
 
+// Keep it as a tuple as the CUDA case, so that the using `DEVICES` is independent of the
+// features set.
 #[cfg(all(feature = "opencl", not(feature = "cuda")))]
-lazy_static! {
-    // Keep it as a tuple as the CUDA case, so that the using `DEVICES` is independent of the
-    // features set.
-    static ref DEVICES: (Vec<Device>, ()) = build_device_list();
-}
+static DEVICES: Lazy<(Vec<Device>, ())> = Lazy::new(build_device_list);
 
 /// The PCI-ID is the combination of the PCI Bus ID and PCI Device ID.
 ///
