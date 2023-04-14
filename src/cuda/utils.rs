@@ -7,12 +7,13 @@ use crate::device::{PciId, Vendor};
 use crate::error::{GPUError, GPUResult};
 
 // NOTE vmx 2021-04-14: This is a hack to make sure contexts stay around. We wrap them, so that
-// `Sync` can be implemented. `Sync` is needed for lazy static. These contexts are never used
-// directly, they are only accessed through [`cuda::Device`] which contains an `UnownedContext`.
-// A device cannot have an own context itself, as then it couldn't be cloned, but that is needed
-// for creating the kernels.
+// `Sync` and `Send` can be implemented. `Sync` and `Send` is needed for once_cell. These contexts
+// are never used directly, they are only accessed through [`cuda::Device`] which contains an
+// `UnownedContext`. A device cannot have an own context itself, as then it couldn't be cloned,
+// but that is needed for creating the kernels.
 pub(crate) struct CudaContexts(Vec<rustacuda::context::Context>);
 unsafe impl Sync for CudaContexts {}
+unsafe impl Send for CudaContexts {}
 
 /// The PCI-ID is the combination of the PCI Bus ID and PCI Device ID.
 ///
