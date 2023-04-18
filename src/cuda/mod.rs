@@ -409,6 +409,7 @@ impl<'a> Kernel<'a> {
     ///
     /// Panics if the wrong number of arguments was provided.
     pub fn run(self) -> GPUResult<()> {
+        log::trace!("vmx: cuda kernel run: start");
         // There can only be a single [`LocalBuffer`], due to CUDA restrictions.
         let shared_mem = self
             .args
@@ -434,6 +435,7 @@ impl<'a> Kernel<'a> {
         // It is safe to launch the kernel as the arguments need to live when the kernel is called,
         // and the buffers are copied synchronuously. At the end of the execution, the underlying
         // stream is synchronized.
+        log::trace!("vmx: cuda kernel run: about to launch");
         unsafe {
             self.stream.launch(
                 &self.function,
@@ -443,9 +445,11 @@ impl<'a> Kernel<'a> {
                 &args,
             )?;
         };
+        log::trace!("vmx: cuda kernel run: about to synchronuze");
         // Synchronize after the kernel execution, so that the underlying pointers can be
         // invalidated/dropped.
         self.stream.synchronize()?;
+        log::trace!("vmx: cuda kernel run: done");
         Ok(())
     }
 }
