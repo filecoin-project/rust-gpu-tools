@@ -16,7 +16,7 @@ opencl = ["opencl3"]
 cuda = ["rustacuda"]
 
 [dependencies]
-dirs = "5.0.0"
+home = "0.5"
 sha2 = "0.10"
 thiserror = "1.0.10"
 log = "0.4.11"

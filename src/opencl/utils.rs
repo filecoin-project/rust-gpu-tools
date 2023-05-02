@@ -41,7 +41,7 @@ fn get_uuid(device: &opencl3::device::Device) -> GPUResult<DeviceUuid> {
 }
 
 pub fn cache_path(device: &Device, cl_source: &str) -> std::io::Result<std::path::PathBuf> {
-    let path = dirs::home_dir().unwrap().join(".rust-gpu-tools");
+    let path = home::home_dir().unwrap().join(".rust-gpu-tools");
     if !std::path::Path::exists(&path) {
         std::fs::create_dir(&path)?;
     }
