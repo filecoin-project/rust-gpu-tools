@@ -26,6 +26,12 @@ fn get_pci_id(device: &opencl3::device::Device) -> GPUResult<PciId> {
             let device_id = topo.device as u16;
             (bus_id << 8) | device_id
         }
+        Vendor::Intel => {
+            let pcibusinfo = device.pcibusinfokhr_intel()?;
+            let bus_id = pcibusinfo.pci_bus as u16;
+            let device_id = pcibusinfo.pci_device as u16;
+            (bus_id << 8) | device_id
+        }
         Vendor::Nvidia => {
             let bus_id = device.pci_bus_id_nv()? as u16;
             let device_id = device.pci_slot_id_nv()? as u16;

@@ -55,18 +55,21 @@ pub fn main() {
         Ok(result)
     });
 
-    // Get the first available device.
-    let device = *Device::all().first().unwrap();
+    // First we run it on CUDA if available
+    if let Some(nv_device) = 
+        Device::by_vendor(rust_gpu_tools::Vendor::Nvidia) {
+            let cuda_program = cuda(nv_device);
+            let cuda_result = cuda_program.run(closures, ()).unwrap();
+            assert_eq!(cuda_result, [6, 8, 10, 12]);
+            println!("CUDA result: {:?}", cuda_result);
+    }
 
-    // First we run it on CUDA.
-    let cuda_program = cuda(device);
-    let cuda_result = cuda_program.run(closures, ()).unwrap();
-    assert_eq!(cuda_result, [6, 8, 10, 12]);
-    println!("CUDA result: {:?}", cuda_result);
-
-    // Then we run it on OpenCL.
-    let opencl_program = opencl(device);
-    let opencl_result = opencl_program.run(closures, ()).unwrap();
-    assert_eq!(opencl_result, [6, 8, 10, 12]);
-    println!("OpenCL result: {:?}", opencl_result);
+    // Then we run it on Intel OpenCL if available
+    if let Some(opencl_device) =
+        Device::by_vendor(rust_gpu_tools::Vendor::Intel) {
+        let opencl_program = opencl(opencl_device);
+        let opencl_result = opencl_program.run(closures, ()).unwrap();
+        assert_eq!(opencl_result, [6, 8, 10, 12]);
+        println!("OpenCL result: {:?}", opencl_result);
+    }
 }
