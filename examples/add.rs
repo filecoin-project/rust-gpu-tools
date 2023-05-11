@@ -65,11 +65,29 @@ pub fn main() {
     }
 
     // Then we run it on Intel OpenCL if available
-    if let Some(opencl_device) =
+    if let Some(intel_opencl_device) =
         Device::by_vendor(rust_gpu_tools::Vendor::Intel) {
-        let opencl_program = opencl(opencl_device);
-        let opencl_result = opencl_program.run(closures, ()).unwrap();
-        assert_eq!(opencl_result, [6, 8, 10, 12]);
-        println!("OpenCL result: {:?}", opencl_result);
+            let opencl_program = opencl(intel_opencl_device);
+            let opencl_result = opencl_program.run(closures, ()).unwrap();
+            assert_eq!(opencl_result, [6, 8, 10, 12]);
+            println!("OpenCL result: {:?}", opencl_result);
+    }
+
+    // Then we run it on Nvidia OpenCL if available
+    if let Some(nvidia_opencl_device) =
+        Device::by_vendor(rust_gpu_tools::Vendor::Nvidia) {
+            let opencl_program = opencl(nvidia_opencl_device);
+            let opencl_result = opencl_program.run(closures, ()).unwrap();
+            assert_eq!(opencl_result, [6, 8, 10, 12]);
+            println!("OpenCL result: {:?}", opencl_result);
+    }
+
+    // Then we run it on AMD OpenCL if available
+    if let Some(amd_opencl_device) =
+        Device::by_vendor(rust_gpu_tools::Vendor::Amd) {
+            let opencl_program = opencl(amd_opencl_device);
+            let opencl_result = opencl_program.run(closures, ()).unwrap();
+            assert_eq!(opencl_result, [6, 8, 10, 12]);
+            println!("OpenCL result: {:?}", opencl_result);
     }
 }
