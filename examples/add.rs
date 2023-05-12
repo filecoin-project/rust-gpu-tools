@@ -1,4 +1,4 @@
-use rust_gpu_tools::{cuda, opencl, program_closures, Device, GPUError, Program};
+use rust_gpu_tools::{cuda, opencl, program_closures, Device, GPUError, Program, Vendor};
 
 /// Returns a `Program` that runs on CUDA.
 fn cuda(device: &Device) -> Program {
@@ -57,7 +57,7 @@ pub fn main() {
 
     // First we run it on CUDA if available
     if let Some(nv_device) = 
-        Device::by_vendor(rust_gpu_tools::Vendor::Nvidia) {
+        Device::by_vendor(Vendor::Nvidia) {
             let cuda_program = cuda(nv_device);
             let cuda_result = cuda_program.run(closures, ()).unwrap();
             assert_eq!(cuda_result, [6, 8, 10, 12]);
@@ -66,28 +66,28 @@ pub fn main() {
 
     // Then we run it on Intel OpenCL if available
     if let Some(intel_opencl_device) =
-        Device::by_vendor(rust_gpu_tools::Vendor::Intel) {
+        Device::by_vendor(Vendor::Intel) {
             let opencl_program = opencl(intel_opencl_device);
             let opencl_result = opencl_program.run(closures, ()).unwrap();
             assert_eq!(opencl_result, [6, 8, 10, 12]);
-            println!("OpenCL result: {:?}", opencl_result);
+            println!("OpenCL Intel result: {:?}", opencl_result);
     }
 
     // Then we run it on Nvidia OpenCL if available
     if let Some(nvidia_opencl_device) =
-        Device::by_vendor(rust_gpu_tools::Vendor::Nvidia) {
+        Device::by_vendor(Vendor::Nvidia) {
             let opencl_program = opencl(nvidia_opencl_device);
             let opencl_result = opencl_program.run(closures, ()).unwrap();
             assert_eq!(opencl_result, [6, 8, 10, 12]);
-            println!("OpenCL result: {:?}", opencl_result);
+            println!("OpenCL Nvidia result: {:?}", opencl_result);
     }
 
     // Then we run it on AMD OpenCL if available
     if let Some(amd_opencl_device) =
-        Device::by_vendor(rust_gpu_tools::Vendor::Amd) {
+        Device::by_vendor(Vendor::Amd) {
             let opencl_program = opencl(amd_opencl_device);
             let opencl_result = opencl_program.run(closures, ()).unwrap();
             assert_eq!(opencl_result, [6, 8, 10, 12]);
-            println!("OpenCL result: {:?}", opencl_result);
+            println!("OpenCL Amd result: {:?}", opencl_result);
     }
 }
