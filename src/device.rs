@@ -345,8 +345,8 @@ impl Device {
     }
 
     /// Returns the device matching the Vendor.
-    pub fn by_vendor(vendor_id: Vendor) -> Option<&'static Device> {
-        Self::all_iter().find(|d| vendor_id == d.vendor())
+    pub fn by_vendor(vendor_id: Vendor) -> Vec<&'static Device> {
+        Self::all_iter().filter(|d| vendor_id == d.vendor()).collect()
     }
 
     /// Returns an iterator of all available GPUs that are supported.
