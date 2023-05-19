@@ -57,7 +57,7 @@ pub fn main() {
 
     // First we run it on CUDA if available
     let nv_dev_list = Device::by_vendor(Vendor::Nvidia);
-    if nv_dev_list.len() > 0 {
+    if !nv_dev_list.is_empty() {
         // Test NVIDIA CUDA Flow
         let cuda_program = cuda(nv_dev_list[0]);
         let cuda_result = cuda_program.run(closures, ()).unwrap();
@@ -73,7 +73,7 @@ pub fn main() {
 
     // Then we run it on Intel OpenCL if available
     let intel_dev_list = Device::by_vendor(Vendor::Intel);
-    if intel_dev_list.len() > 0 {
+    if !intel_dev_list.is_empty() {
         let opencl_program = opencl(intel_dev_list[0]);
         let opencl_result = opencl_program.run(closures, ()).unwrap();
         assert_eq!(opencl_result, [6, 8, 10, 12]);
@@ -81,7 +81,7 @@ pub fn main() {
     }
 
     let amd_dev_list = Device::by_vendor(Vendor::Amd);
-    if amd_dev_list.len() > 0 {
+    if !amd_dev_list.is_empty() {
         let opencl_program = opencl(amd_dev_list[0]);
         let opencl_result = opencl_program.run(closures, ()).unwrap();
         assert_eq!(opencl_result, [6, 8, 10, 12]);

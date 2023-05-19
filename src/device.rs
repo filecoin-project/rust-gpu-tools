@@ -346,7 +346,9 @@ impl Device {
 
     /// Returns the device matching the Vendor.
     pub fn by_vendor(vendor_id: Vendor) -> Vec<&'static Device> {
-        Self::all_iter().filter(|d| vendor_id == d.vendor()).collect()
+        Self::all_iter()
+            .filter(|d| vendor_id == d.vendor())
+            .collect()
     }
 
     /// Returns an iterator of all available GPUs that are supported.
@@ -466,8 +468,8 @@ mod test {
     use super::{
         Device, DeviceUuid, GPUError, PciId, UniqueId, Vendor, AMD_DEVICE_ON_APPLE_VENDOR_ID,
         AMD_DEVICE_ON_APPLE_VENDOR_STRING, AMD_DEVICE_VENDOR_ID, AMD_DEVICE_VENDOR_STRING,
-        INTEL_DEVICE_VENDOR_ID, INTEL_DEVICE_VENDOR_STRING,
-        NVIDIA_DEVICE_VENDOR_ID, NVIDIA_DEVICE_VENDOR_STRING,
+        INTEL_DEVICE_VENDOR_ID, INTEL_DEVICE_VENDOR_STRING, NVIDIA_DEVICE_VENDOR_ID,
+        NVIDIA_DEVICE_VENDOR_STRING,
     };
     use std::convert::TryFrom;
 
@@ -545,7 +547,7 @@ mod test {
         );
         assert_eq!(
             Vendor::Intel.to_string(),
-            Intel_DEVICE_VENDOR_STRING,
+            INTEL_DEVICE_VENDOR_STRING,
             "Intel vendor can be converted to string."
         );
         assert_eq!(
