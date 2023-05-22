@@ -19,10 +19,6 @@ use crate::opencl;
 const UUID_SIZE: usize = 16;
 const AMD_DEVICE_VENDOR_STRING: &str = "Advanced Micro Devices, Inc.";
 const AMD_DEVICE_VENDOR_ID: u32 = 0x1002;
-
-const INTEL_DEVICE_VENDOR_STRING: &str = "Intel(R) Corporation";
-const INTEL_DEVICE_VENDOR_ID: u32 = 0x8086;
-
 // For some reason integrated AMD cards on Apple don't have the usual vendor name and ID
 const AMD_DEVICE_ON_APPLE_VENDOR_STRING: &str = "AMD";
 const AMD_DEVICE_ON_APPLE_VENDOR_ID: u32 = 0x1021d00;
@@ -176,8 +172,6 @@ impl fmt::Display for UniqueId {
 pub enum Vendor {
     /// GPU by AMD.
     Amd,
-    /// GPU by Intel.
-    Intel,
     /// GPU by NVIDIA.
     Nvidia,
 }
@@ -189,7 +183,6 @@ impl TryFrom<&str> for Vendor {
         match vendor {
             AMD_DEVICE_VENDOR_STRING => Ok(Self::Amd),
             AMD_DEVICE_ON_APPLE_VENDOR_STRING => Ok(Self::Amd),
-            INTEL_DEVICE_VENDOR_STRING => Ok(Self::Intel),
             NVIDIA_DEVICE_VENDOR_STRING => Ok(Self::Nvidia),
             _ => Err(GPUError::UnsupportedVendor(vendor.to_string())),
         }
@@ -203,7 +196,6 @@ impl TryFrom<u32> for Vendor {
         match vendor {
             AMD_DEVICE_VENDOR_ID => Ok(Self::Amd),
             AMD_DEVICE_ON_APPLE_VENDOR_ID => Ok(Self::Amd),
-            INTEL_DEVICE_VENDOR_ID => Ok(Self::Intel),
             NVIDIA_DEVICE_VENDOR_ID => Ok(Self::Nvidia),
             _ => Err(GPUError::UnsupportedVendor(format!("0x{:x}", vendor))),
         }
@@ -214,7 +206,6 @@ impl fmt::Display for Vendor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let vendor = match self {
             Self::Amd => AMD_DEVICE_VENDOR_STRING,
-            Self::Intel => INTEL_DEVICE_VENDOR_STRING,
             Self::Nvidia => NVIDIA_DEVICE_VENDOR_STRING,
         };
         write!(f, "{}", vendor)
@@ -340,13 +331,6 @@ impl Device {
         Self::all_iter().find(|d| unique_id == d.unique_id())
     }
 
-    /// Returns the device matching the Vendor.
-    pub fn by_vendor(vendor_id: Vendor) -> Vec<&'static Device> {
-        Self::all_iter()
-            .filter(|d| vendor_id == d.vendor())
-            .collect()
-    }
-
     /// Returns an iterator of all available GPUs that are supported.
     fn all_iter() -> impl Iterator<Item = &'static Device> {
         DEVICES.0.iter()
@@ -464,8 +448,7 @@ mod test {
     use super::{
         Device, DeviceUuid, GPUError, PciId, UniqueId, Vendor, AMD_DEVICE_ON_APPLE_VENDOR_ID,
         AMD_DEVICE_ON_APPLE_VENDOR_STRING, AMD_DEVICE_VENDOR_ID, AMD_DEVICE_VENDOR_STRING,
-        INTEL_DEVICE_VENDOR_ID, INTEL_DEVICE_VENDOR_STRING, NVIDIA_DEVICE_VENDOR_ID,
-        NVIDIA_DEVICE_VENDOR_STRING,
+        NVIDIA_DEVICE_VENDOR_ID, NVIDIA_DEVICE_VENDOR_STRING,
     };
     use std::convert::TryFrom;
 
@@ -491,11 +474,6 @@ mod test {
             "AMD vendor string (on apple) can be converted."
         );
         assert_eq!(
-            Vendor::try_from(INTEL_DEVICE_VENDOR_STRING).unwrap(),
-            Vendor::Intel,
-            "Intel vendor string can be converted."
-        );
-        assert_eq!(
             Vendor::try_from(NVIDIA_DEVICE_VENDOR_STRING).unwrap(),
             Vendor::Nvidia,
             "Nvidia vendor string can be converted."
@@ -519,11 +497,6 @@ mod test {
             "AMD vendor ID (on apple) can be converted."
         );
         assert_eq!(
-            Vendor::try_from(INTEL_DEVICE_VENDOR_ID).unwrap(),
-            Vendor::Intel,
-            "Intel vendor ID can be converted."
-        );
-        assert_eq!(
             Vendor::try_from(NVIDIA_DEVICE_VENDOR_ID).unwrap(),
             Vendor::Nvidia,
             "Nvidia vendor ID can be converted."
@@ -540,11 +513,6 @@ mod test {
             Vendor::Amd.to_string(),
             AMD_DEVICE_VENDOR_STRING,
             "AMD vendor can be converted to string."
-        );
-        assert_eq!(
-            Vendor::Intel.to_string(),
-            INTEL_DEVICE_VENDOR_STRING,
-            "Intel vendor can be converted to string."
         );
         assert_eq!(
             Vendor::Nvidia.to_string(),
