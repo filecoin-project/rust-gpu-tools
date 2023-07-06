@@ -121,7 +121,7 @@ impl Device {
 ///
 /// The majority of methods are the same as [`crate::cuda::Program`], so you can write code using this
 /// API, which will then work with OpenCL as well as CUDA kernels.
-#[allow(broken_intra_doc_links)]
+#[allow(rustdoc::broken_intra_doc_links)]
 pub struct Program {
     device_name: String,
     queue: CommandQueue,
