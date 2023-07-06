@@ -32,6 +32,7 @@ pub struct Buffer<T> {
 }
 
 /// CUDA specific device.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Device {
     vendor: Vendor,
