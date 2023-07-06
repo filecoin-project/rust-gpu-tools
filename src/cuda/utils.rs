@@ -13,6 +13,7 @@ use crate::error::{GPUError, GPUResult};
 // for creating the kernels.
 pub(crate) struct CudaContexts(Vec<rustacuda::context::Context>);
 unsafe impl Sync for CudaContexts {}
+unsafe impl Send for CudaContexts {}
 
 /// The PCI-ID is the combination of the PCI Bus ID and PCI Device ID.
 ///

@@ -121,7 +121,7 @@ impl Device {
 ///
 /// The majority of methods are the same as [`crate::cuda::Program`], so you can write code using this
 /// API, which will then work with OpenCL as well as CUDA kernels.
-#[allow(broken_intra_doc_links)]
+#[allow(rustdoc::broken_intra_doc_links)]
 pub struct Program {
     device_name: String,
     queue: CommandQueue,
@@ -260,7 +260,7 @@ impl Program {
         self.queue
             .enqueue_write_buffer(&mut buffer, CL_BLOCKING, 0, &[0u8], &[])?;
         self.queue
-            .enqueue_write_buffer(&mut buffer, CL_BLOCKING, 0, &bytes, &[])?;
+            .enqueue_write_buffer(&mut buffer, CL_BLOCKING, 0, bytes, &[])?;
 
         Ok(Buffer::<T> {
             buffer,
@@ -285,7 +285,7 @@ impl Program {
             .kernels_by_name
             .get(name)
             .ok_or_else(|| GPUError::KernelNotFound(name.to_string()))?;
-        let mut builder = ExecuteKernel::new(&kernel);
+        let mut builder = ExecuteKernel::new(kernel);
         builder.set_global_work_size(global_work_size * local_work_size);
         builder.set_local_work_size(local_work_size);
         Ok(Kernel {
@@ -313,7 +313,7 @@ impl Program {
             )
         };
         self.queue
-            .enqueue_write_buffer(&mut buffer.buffer, CL_BLOCKING, 0, &bytes, &[])?;
+            .enqueue_write_buffer(&mut buffer.buffer, CL_BLOCKING, 0, bytes, &[])?;
 
         Ok(())
     }
@@ -323,14 +323,14 @@ impl Program {
         assert!(data.len() <= buffer.length, "Buffer is too small");
 
         // It is safe as long as the sizes match.
-        let mut bytes = unsafe {
+        let bytes = unsafe {
             std::slice::from_raw_parts_mut(
                 data.as_mut_ptr() as *mut T as *mut u8,
                 data.len() * std::mem::size_of::<T>(),
             )
         };
         self.queue
-            .enqueue_read_buffer(&buffer.buffer, CL_BLOCKING, 0, &mut bytes, &[])?;
+            .enqueue_read_buffer(&buffer.buffer, CL_BLOCKING, 0, bytes, &[])?;
 
         Ok(())
     }
@@ -429,7 +429,7 @@ impl<'a> Kernel<'a> {
                 "There cannot be more than one `LocalBuffer`.".to_string(),
             ));
         }
-        self.builder.enqueue_nd_range(&self.queue)?;
+        self.builder.enqueue_nd_range(self.queue)?;
         Ok(())
     }
 }
