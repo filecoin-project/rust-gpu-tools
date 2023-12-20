@@ -23,9 +23,9 @@ impl Program {
     /// `Program`.
     ///
     /// You need to pass in two closures, one for OpenCL, one for CUDA, both get their
-    /// corresponding program type as parameter. For convenience there is the [`program_closures`]
-    /// macro defined, which can help reducing code duplication by creating two closures out of
-    /// a single one.
+    /// corresponding program type as parameter. For convenience there is the
+    /// [`crate::program_closures`] macro defined, which can help reducing code duplication by
+    /// creating two closures out of a single one.
     ///
     /// CUDA and OpenCL support can be enabled/disabled by the `opencl` and `cuda` features. If
     /// one of them is disabled, you still need to pass in two closures. This way the API stays,

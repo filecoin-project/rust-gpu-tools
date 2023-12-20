@@ -4,6 +4,7 @@ pub(crate) mod utils;
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::mem;
 use std::ptr;
 
 use opencl3::command_queue::CommandQueue;
@@ -245,9 +246,8 @@ impl Program {
 
     /// Creates a new buffer on the GPU and initializes with the given slice.
     pub fn create_buffer_from_slice<T>(&self, slice: &[T]) -> GPUResult<Buffer<T>> {
-        let length = slice.len();
         // The underlying buffer is `u8`, hence we need the number of bytes.
-        let bytes_len = length * std::mem::size_of::<T>();
+        let bytes_len = mem::size_of_val(slice);
 
         let mut buffer = unsafe {
             opencl3::memory::Buffer::create(
@@ -271,7 +271,7 @@ impl Program {
 
         Ok(Buffer::<T> {
             buffer,
-            length,
+            length: slice.len(),
             _phantom: std::marker::PhantomData,
         })
     }
@@ -316,7 +316,7 @@ impl Program {
         let bytes = unsafe {
             std::slice::from_raw_parts(
                 data.as_ptr() as *const T as *const u8,
-                data.len() * std::mem::size_of::<T>(),
+                mem::size_of_val(data),
             )
         };
         unsafe {
@@ -334,7 +334,7 @@ impl Program {
         let bytes = unsafe {
             std::slice::from_raw_parts_mut(
                 data.as_mut_ptr() as *mut T as *mut u8,
-                data.len() * std::mem::size_of::<T>(),
+                mem::size_of_val(data),
             )
         };
         unsafe {

@@ -7,7 +7,7 @@ edition = "2021"
 homepage = "https://github.com/filecoin-project/rust-gpu-tools"
 license = "MIT/Apache-2.0"
 repository = "https://github.com/filecoin-project/rust-gpu-tools"
-rust-version = "1.62.1"
+rust-version = "1.70.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
