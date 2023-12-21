@@ -14,6 +14,7 @@ use std::convert::TryFrom;
 use std::ffi::{c_void, CStr, CString};
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::mem;
 
 use log::debug;
 use rustacuda::memory::{AsyncCopyDestination, DeviceBuffer};
@@ -199,7 +200,7 @@ impl Program {
     /// Creates a new buffer on the GPU and initializes with the given slice.
     pub fn create_buffer_from_slice<T>(&self, slice: &[T]) -> GPUResult<Buffer<T>> {
         // The number of bytes is used for the allocations.
-        let bytes_len = slice.len() * std::mem::size_of::<T>();
+        let bytes_len = mem::size_of_val(slice);
 
         // Transmuting types is safe as long a sizes match.
         let bytes = unsafe {
@@ -246,7 +247,7 @@ impl Program {
         let bytes = unsafe {
             std::slice::from_raw_parts(
                 data.as_ptr() as *const T as *const u8,
-                data.len() * std::mem::size_of::<T>(),
+                mem::size_of_val(data),
             )
         };
 
@@ -265,7 +266,7 @@ impl Program {
         let bytes = unsafe {
             std::slice::from_raw_parts_mut(
                 data.as_mut_ptr() as *mut T as *mut u8,
-                data.len() * std::mem::size_of::<T>(),
+                mem::size_of_val(data),
             )
         };
 

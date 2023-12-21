@@ -3,7 +3,7 @@ version: 2.1
 executors:
   default:
     machine:
-      image: ubuntu-2004-cuda-11.2:202103-01
+      image: linux-cuda-12:2023.05.1
     working_directory: ~/gpuci
     resource_class: gpu.nvidia.medium
 
