@@ -1,0 +1,62 @@
+name: CI
+
+on: [pull_request, push]
+
+# Cancel a job if there's a new on on the same branch started.
+# Based on https://stackoverflow.com/questions/58895283/stop-already-running-workflow-job-in-github-actions/67223051#67223051
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+  # Faster crates.io index checkout.
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+  RUST_LOG: debug
+
+jobs:
+  check_clippy:
+    runs-on: ubuntu-24.04
+    name: Clippy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run cargo clippy
+        run: cargo clippy --all-targets --workspace --all-features -- -D warnings
+
+  check_fmt:
+    runs-on: ubuntu-24.04
+    name: Checking fmt
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run cargo fmt
+        run: cargo fmt --all -- --check
+
+  rustdoc:
+    runs-on: ubuntu-24.04
+    name: Rustdoc
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run rustdoc
+        run: cargo rustdoc --all-features -- -D warnings
+
+  build:
+    runs-on: ubuntu-24.04
+    name: Release build
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run cargo release build
+        run: cargo build --release
+
+  # Enable these tests once there's a runner with a GPU.
+  #test_gpu:
+  #  runs-on: ubuntu-24.04
+  #  name: Test
+  #  steps:
+  #    - uses: actions/checkout@v4
+  #    - name: Install required packages
+  #      run: sudo apt install --no-install-recommends --yes libhwloc-dev nvidia-cuda-toolkit ocl-icd-opencl-dev
+  #    - name: Run tests
+  #      run: cargo test
+  #    - name: Run `add` example
+  #      run: cargo run --example add
