@@ -152,7 +152,7 @@ impl Program {
             let mut program = opencl3::program::Program::create_from_source(&context, src)?;
             if let Err(build_error) = program.build(context.devices(), "") {
                 let log = program.get_build_log(context.devices()[0])?;
-                return Err(GPUError::Opencl3(build_error, Some(log)));
+                return Err(GPUError::Opencl3 { error: build_error, message: Some(log) });
             }
             debug!(
                 "Building kernel ({}) from source: done.",
@@ -191,7 +191,7 @@ impl Program {
         }?;
         if let Err(build_error) = program.build(context.devices(), "") {
             let log = program.get_build_log(context.devices()[0])?;
-            return Err(GPUError::Opencl3(build_error, Some(log)));
+            return Err(GPUError::Opencl3 { error: build_error, message: Some(log) });
         }
         let queue = CommandQueue::create_default(&context, 0)?;
         let kernels = opencl3::kernel::create_program_kernels(&program)?;
