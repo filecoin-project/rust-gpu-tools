@@ -1,10 +1,10 @@
-//! Abstraction layer for OpenCL and CUDA.
+//! Abstraction layer for OpenCL, CUDA, and Metal.
 //!
 //! Feature flags
 //! -------------
 //!
-//! There are two [feature flags], `cuda` and `opencl`. By default `opencl` is enabled. You can
-//! enable both at the same time. At least one of them needs to be enabled at any time.
+//! There are three [feature flags], `cuda`, `opencl`, and `metal`. By default `opencl` is enabled. You can
+//! enable all of them at the same time. At least one of them needs to be enabled at any time.
 //!
 //! [feature flags]: https://doc.rust-lang.org/cargo/reference/manifest.html#the-features-section
 
@@ -12,21 +12,23 @@
 
 mod device;
 mod error;
-#[cfg(any(feature = "cuda", feature = "opencl"))]
+#[cfg(any(feature = "cuda", feature = "opencl", feature = "metal"))]
 mod program;
 
 #[cfg(feature = "cuda")]
 pub mod cuda;
 #[cfg(feature = "opencl")]
 pub mod opencl;
+#[cfg(feature = "metal")]
+pub mod metal;
 
 pub use device::{Device, DeviceUuid, Framework, PciId, UniqueId, Vendor};
 pub use error::GPUError;
-#[cfg(any(feature = "cuda", feature = "opencl"))]
+#[cfg(any(feature = "cuda", feature = "opencl", feature = "metal"))]
 pub use program::Program;
 
-#[cfg(not(any(feature = "cuda", feature = "opencl")))]
-compile_error!("At least one of the features `cuda` or `opencl` must be enabled.");
+#[cfg(not(any(feature = "cuda", feature = "opencl", feature = "metal")))]
+compile_error!("At least one of the features `cuda`, `opencl`, or `metal` must be enabled.");
 
 /// A buffer on the GPU.
 ///

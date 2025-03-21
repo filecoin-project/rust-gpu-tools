@@ -29,6 +29,16 @@ pub enum GPUError {
     #[cfg(feature = "cuda")]
     #[error("Cuda Error: {0}")]
     Cuda(#[from] CudaError),
+    
+    /// Error from the underlying `metal-rs` library.
+    #[cfg(feature = "metal")]
+    #[error("Metal Error: {0}")]
+    Metal(String),
+    
+    /// Error when compiling a Metal program.
+    #[cfg(feature = "metal")]
+    #[error("Metal Compile Error: {0}")]
+    MetalCompile(String),
 
     /// Error when a device cannot be found.
     #[error("Device not found!")]
