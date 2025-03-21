@@ -11,6 +11,7 @@ use crate::error::{GPUError, GPUResult};
 // are never used directly, they are only accessed through [`cuda::Device`] which contains an
 // `UnownedContext`. A device cannot have an own context itself, as then it couldn't be cloned,
 // but that is needed for creating the kernels.
+#[allow(dead_code)]
 pub(crate) struct CudaContexts(Vec<rustacuda::context::Context>);
 unsafe impl Sync for CudaContexts {}
 unsafe impl Send for CudaContexts {}
