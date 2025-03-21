@@ -199,7 +199,9 @@ impl Program {
         let bytes_len = mem::size_of_val(slice);
 
         // Transmuting types is safe as long a sizes match.
-        let bytes = unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, bytes_len) };
+        let bytes = unsafe {
+            std::slice::from_raw_parts(slice.as_ptr() as *const u8, bytes_len)
+        };
 
         // It is only unsafe as long as the buffer isn't initialized, but that's what we do next.
         let mut buffer = unsafe { DeviceBuffer::<u8>::uninitialized(bytes_len)? };
@@ -239,7 +241,10 @@ impl Program {
 
         // Transmuting types is safe as long a sizes match.
         let bytes = unsafe {
-            std::slice::from_raw_parts(data.as_ptr() as *const u8, mem::size_of_val(data))
+            std::slice::from_raw_parts(
+                data.as_ptr() as *const u8,
+                mem::size_of_val(data),
+            )
         };
 
         // It is safe as we synchronize the stream after the call.
@@ -255,7 +260,10 @@ impl Program {
 
         // Transmuting types is safe as long a sizes match.
         let bytes = unsafe {
-            std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, mem::size_of_val(data))
+            std::slice::from_raw_parts_mut(
+                data.as_mut_ptr() as *mut u8,
+                mem::size_of_val(data),
+            )
         };
 
         // It is safe as we synchronize the stream after the call.
