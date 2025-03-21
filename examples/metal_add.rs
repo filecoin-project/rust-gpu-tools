@@ -1,7 +1,4 @@
-use std::env;
-use std::path::Path;
-
-use rust_gpu_tools::{metal, Device, Program};
+use rust_gpu_tools::{metal, Device};
 
 fn main() {
     // Enable this example only when Metal feature is enabled
@@ -32,12 +29,8 @@ fn main() {
         let device = metal_devices[0];
         println!("Using device: {}", device.name());
         
-        // Read Metal shader source
-        let args: Vec<String> = env::args().collect();
-        let dir = Path::new(&args[0]).parent().unwrap_or_else(|| Path::new(""));
-        let path = dir.join("metal/add.metal");
-        let src = std::fs::read_to_string(path)
-            .expect("Error reading Metal shader source");
+        // Use Metal shader source directly using include_str!
+        let src = include_str!("metal_add.metal");
         
         // Create Metal program
         let metal_device = device.metal_device().unwrap();
@@ -55,7 +48,7 @@ fn main() {
             .expect("Error creating buffer A");
         let b_buffer = program.create_buffer_from_slice(&b)
             .expect("Error creating buffer B");
-        let mut c_buffer = unsafe { 
+        let c_buffer = unsafe { 
             program.create_buffer::<f32>(VECTOR_SIZE)
                 .expect("Error creating buffer C") 
         };
