@@ -264,9 +264,7 @@ impl Program {
             )?
         };
         // Transmuting types is safe as long a sizes match.
-        let bytes = unsafe {
-            std::slice::from_raw_parts(slice.as_ptr() as *const u8, bytes_len)
-        };
+        let bytes = unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, bytes_len) };
         // Write some data right-away. This makes a significant performance different.
         unsafe {
             self.queue
@@ -320,10 +318,7 @@ impl Program {
 
         // It is safe as long as the sizes match.
         let bytes = unsafe {
-            std::slice::from_raw_parts(
-                data.as_ptr() as *const u8,
-                mem::size_of_val(data),
-            )
+            std::slice::from_raw_parts(data.as_ptr() as *const u8, mem::size_of_val(data))
         };
         unsafe {
             self.queue
@@ -338,10 +333,7 @@ impl Program {
 
         // It is safe as long as the sizes match.
         let bytes = unsafe {
-            std::slice::from_raw_parts_mut(
-                data.as_mut_ptr() as *mut u8,
-                mem::size_of_val(data),
-            )
+            std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, mem::size_of_val(data))
         };
         unsafe {
             self.queue
