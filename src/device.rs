@@ -14,6 +14,8 @@ use crate::error::{GPUError, GPUResult};
 use crate::cuda;
 #[cfg(feature = "opencl")]
 use crate::opencl;
+#[cfg(feature = "metal")]
+use crate::metal;
 
 /// The UUID of the devices returned by OpenCL as well as CUDA are always 16 bytes long.
 const UUID_SIZE: usize = 16;
@@ -28,16 +30,36 @@ const AMD_DEVICE_ON_APPLE_VENDOR_STRING: &str = "AMD";
 const AMD_DEVICE_ON_APPLE_VENDOR_ID: u32 = 0x1021d00;
 const NVIDIA_DEVICE_VENDOR_STRING: &str = "NVIDIA Corporation";
 const NVIDIA_DEVICE_VENDOR_ID: u32 = 0x10de;
+const APPLE_DEVICE_VENDOR_ID: u32 = 0x1027F00;
+const APPLE_DEVICE_VENDOR_STRING: &str = "Apple";
 
-// The owned CUDA contexts are stored globally. Each devives contains an unowned reference, so
+ // The owned CUDA contexts are stored globally. Each devives contains an unowned reference, so
 // that devices can be cloned.
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", not(feature = "metal")))]
+static DEVICES: Lazy<(Vec<Device>, cuda::utils::CudaContexts)> = Lazy::new(build_device_list);
+
+#[cfg(all(feature = "cuda", feature = "metal"))]
 static DEVICES: Lazy<(Vec<Device>, cuda::utils::CudaContexts)> = Lazy::new(build_device_list);
 
 // Keep it as a tuple as the CUDA case, so that the using `DEVICES` is independent of the
 // features set.
-#[cfg(all(feature = "opencl", not(feature = "cuda")))]
-static DEVICES: Lazy<(Vec<Device>, ())> = Lazy::new(build_device_list);
+#[cfg(all(feature = "opencl", not(feature = "cuda"), not(feature = "metal")))]
+static DEVICES: Lazy<(Vec<Device>, ())> = Lazy::new(|| {
+    let devices = build_device_list();
+    (devices, ())
+});
+
+#[cfg(all(feature = "metal", not(feature = "cuda"), not(feature = "opencl")))]
+static DEVICES: Lazy<(Vec<Device>, ())> = Lazy::new(|| {
+    let devices = build_device_list();
+    (devices, ())
+});
+
+#[cfg(all(feature = "opencl", feature = "metal", not(feature = "cuda")))]
+static DEVICES: Lazy<(Vec<Device>, ())> = Lazy::new(|| {
+    let devices = build_device_list();
+    (devices, ())
+});
 
 /// The PCI-ID is the combination of the PCI Bus ID and PCI Device ID.
 ///
@@ -180,6 +202,8 @@ pub enum Vendor {
     Intel,
     /// GPU by NVIDIA.
     Nvidia,
+    /// GPU by Apple.
+    Apple,
 }
 
 impl TryFrom<&str> for Vendor {
@@ -191,6 +215,7 @@ impl TryFrom<&str> for Vendor {
             AMD_DEVICE_ON_APPLE_VENDOR_STRING => Ok(Self::Amd),
             INTEL_DEVICE_VENDOR_STRING => Ok(Self::Intel),
             NVIDIA_DEVICE_VENDOR_STRING => Ok(Self::Nvidia),
+            APPLE_DEVICE_VENDOR_STRING => Ok(Self::Apple),
             _ => Err(GPUError::UnsupportedVendor(vendor.to_string())),
         }
     }
@@ -205,6 +230,7 @@ impl TryFrom<u32> for Vendor {
             AMD_DEVICE_ON_APPLE_VENDOR_ID => Ok(Self::Amd),
             INTEL_DEVICE_VENDOR_ID => Ok(Self::Intel),
             NVIDIA_DEVICE_VENDOR_ID => Ok(Self::Nvidia),
+            APPLE_DEVICE_VENDOR_ID => Ok(Self::Apple),
             _ => Err(GPUError::UnsupportedVendor(format!("0x{:x}", vendor))),
         }
     }
@@ -216,12 +242,13 @@ impl fmt::Display for Vendor {
             Self::Amd => AMD_DEVICE_VENDOR_STRING,
             Self::Intel => INTEL_DEVICE_VENDOR_STRING,
             Self::Nvidia => NVIDIA_DEVICE_VENDOR_STRING,
+            Self::Apple => APPLE_DEVICE_VENDOR_STRING,
         };
         write!(f, "{}", vendor)
     }
 }
 
-/// Which framework to use, CUDA or OpenCL.
+/// Which framework to use: CUDA, OpenCL, or Metal.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Framework {
     /// CUDA.
@@ -230,9 +257,12 @@ pub enum Framework {
     /// OpenCL.
     #[cfg(feature = "opencl")]
     Opencl,
+    /// Metal.
+    #[cfg(feature = "metal")]
+    Metal,
 }
 
-/// A device that may have a CUDA and/or OpenCL GPU associated with it.
+/// A device that may have a CUDA, OpenCL, and/or Metal GPU associated with it.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Device {
     vendor: Vendor,
@@ -248,6 +278,8 @@ pub struct Device {
     cuda: Option<cuda::Device>,
     #[cfg(feature = "opencl")]
     opencl: Option<opencl::Device>,
+    #[cfg(feature = "metal")]
+    metal: Option<metal::Device>,
 }
 
 impl Device {
@@ -285,11 +317,16 @@ impl Device {
         }
     }
 
-    /// Returns the preferred framework (CUDA or OpenCL) to use.
+    /// Returns the preferred framework (CUDA, OpenCL, or Metal) to use.
     ///
-    /// CUDA will be be preferred over OpenCL. The returned framework will work on the device.
-    /// E.g. it won't return `Framework::Cuda` for an AMD device.
+    /// On Apple platforms, Metal will be preferred. For other platforms, CUDA will be preferred over OpenCL.
+    /// The returned framework will work on the device. E.g. it won't return `Framework::Cuda` for an AMD device.
     pub fn framework(&self) -> Framework {
+        #[cfg(all(feature = "metal", any(feature = "opencl", feature = "cuda")))]
+        if cfg!(feature = "metal") && self.metal.is_some() && self.vendor == Vendor::Apple {
+            return Framework::Metal;
+        }
+
         #[cfg(all(feature = "opencl", feature = "cuda"))]
         if cfg!(feature = "cuda") && self.cuda.is_some() {
             Framework::Cuda
@@ -297,14 +334,19 @@ impl Device {
             Framework::Opencl
         }
 
-        #[cfg(all(feature = "cuda", not(feature = "opencl")))]
+        #[cfg(all(feature = "cuda", not(feature = "opencl"), not(feature = "metal")))]
         {
             Framework::Cuda
         }
 
-        #[cfg(all(feature = "opencl", not(feature = "cuda")))]
+        #[cfg(all(feature = "opencl", not(feature = "cuda"), not(feature = "metal")))]
         {
             Framework::Opencl
+        }
+
+        #[cfg(all(feature = "metal", not(feature = "cuda"), not(feature = "opencl")))]
+        {
+            Framework::Metal
         }
     }
 
@@ -318,6 +360,12 @@ impl Device {
     #[cfg(feature = "opencl")]
     pub fn opencl_device(&self) -> Option<&opencl::Device> {
         self.opencl.as_ref()
+    }
+
+    /// Returns the underlying Metal device if it is available.
+    #[cfg(feature = "metal")]
+    pub fn metal_device(&self) -> Option<&metal::Device> {
+        self.metal.as_ref()
     }
 
     /// Returns all available GPUs that are supported.
@@ -355,8 +403,8 @@ impl Device {
 
 /// Get a list of all available and supported devices.
 ///
-/// If both, the `cuda` and the `opencl` feature are enabled, a device supporting both will be
-/// combined into a single device. You can then access the underlying CUDA and OpenCL device
+/// If multiple features (CUDA, OpenCL, Metal) are enabled, a device supporting multiple frameworks
+/// will be combined into a single device. You can then access the underlying CUDA, OpenCL, or Metal device
 /// if needed.
 ///
 /// If there is a failure retrieving a device, it won't lead to a hard error, but an error will be
@@ -368,10 +416,10 @@ fn build_device_list() -> (Vec<Device>, cuda::utils::CudaContexts) {
     #[cfg(feature = "opencl")]
     let opencl_devices = opencl::utils::build_device_list();
 
-    #[cfg(all(feature = "cuda", feature = "opencl"))]
+    #[cfg(feature = "metal")]
+    let metal_devices = metal::utils::build_device_list();
+
     let (mut cuda_devices, cuda_contexts) = cuda::utils::build_device_list();
-    #[cfg(all(feature = "cuda", not(feature = "opencl")))]
-    let (cuda_devices, cuda_contexts) = cuda::utils::build_device_list();
 
     // Combine OpenCL and CUDA devices into one device if it is the same GPU
     #[cfg(feature = "opencl")]
@@ -386,6 +434,8 @@ fn build_device_list() -> (Vec<Device>, cuda::utils::CudaContexts) {
             uuid: opencl_device.uuid(),
             opencl: Some(opencl_device),
             cuda: None,
+            #[cfg(feature = "metal")]
+            metal: None,
         };
 
         // Only devices from Nvidia can use CUDA
@@ -414,7 +464,48 @@ fn build_device_list() -> (Vec<Device>, cuda::utils::CudaContexts) {
         all_devices.push(device)
     }
 
-    // All CUDA devices that don't have a corresponding OpenCL devices
+    // Combine Metal and CUDA devices if it is the same GPU
+    #[cfg(all(feature = "metal", feature = "cuda"))]
+    for metal_device in metal_devices {
+        // Skip if we already have a device with the same name
+        if all_devices.iter().any(|d| d.name == metal_device.name()) {
+            continue;
+        }
+
+        let mut device = Device {
+            vendor: metal_device.vendor(),
+            name: metal_device.name(),
+            memory: metal_device.memory(),
+            compute_units: metal_device.compute_units(),
+            compute_capability: None,
+            pci_id: metal_device.pci_id(),
+            uuid: metal_device.uuid(),
+            cuda: None,
+            #[cfg(feature = "opencl")]
+            opencl: None,
+            metal: Some(metal_device),
+        };
+
+        // Only devices from Nvidia can use CUDA
+        if device.vendor == Vendor::Nvidia {
+            for ii in 0..cuda_devices.len() {
+                if (device.uuid.is_some() && cuda_devices[ii].uuid() == device.uuid)
+                    || cuda_devices[ii].name().to_lowercase().contains(&device.name.to_lowercase())
+                {
+                    // Move the CUDA device out of the vector
+                    device.cuda = Some(cuda_devices.remove(ii));
+                    // Update compute capability from CUDA
+                    device.compute_capability = Some(device.cuda.as_ref().unwrap().compute_capability());
+                    // Only one device can match
+                    break;
+                }
+            }
+        }
+
+        all_devices.push(device);
+    }
+
+    // All CUDA devices that don't have a corresponding OpenCL or Metal device
     for cuda_device in cuda_devices {
         let device = Device {
             vendor: cuda_device.vendor(),
@@ -427,6 +518,8 @@ fn build_device_list() -> (Vec<Device>, cuda::utils::CudaContexts) {
             cuda: Some(cuda_device),
             #[cfg(feature = "opencl")]
             opencl: None,
+            #[cfg(feature = "metal")]
+            metal: None,
         };
         all_devices.push(device);
     }
@@ -439,8 +532,8 @@ fn build_device_list() -> (Vec<Device>, cuda::utils::CudaContexts) {
 ///
 /// If there is a failure retrieving a device, it won't lead to a hard error, but an error will be
 /// logged and the corresponding device won't be available.
-#[cfg(all(feature = "opencl", not(feature = "cuda")))]
-fn build_device_list() -> (Vec<Device>, ()) {
+#[cfg(all(feature = "opencl", not(feature = "cuda"), not(feature = "metal")))]
+fn build_device_list() -> Vec<Device> {
     let devices = opencl::utils::build_device_list()
         .into_iter()
         .map(|device| Device {
@@ -456,7 +549,85 @@ fn build_device_list() -> (Vec<Device>, ()) {
         .collect();
 
     debug!("loaded devices: {:?}", devices);
-    (devices, ())
+    devices
+}
+
+/// Get a list of all available and supported Metal devices.
+///
+/// If there is a failure retrieving a device, it won't lead to a hard error, but an error will be
+/// logged and the corresponding device won't be available.
+#[cfg(all(feature = "metal", not(feature = "cuda"), not(feature = "opencl")))]
+fn build_device_list() -> Vec<Device> {
+    let devices = metal::utils::build_device_list()
+        .into_iter()
+        .map(|device| Device {
+            vendor: device.vendor(),
+            name: device.name(),
+            memory: device.memory(),
+            compute_units: device.compute_units(),
+            compute_capability: None,
+            pci_id: device.pci_id(),
+            uuid: device.uuid(),
+            metal: Some(device),
+        })
+        .collect();
+
+    debug!("loaded devices: {:?}", devices);
+    devices
+}
+
+/// Get a list of all available and supported OpenCL and Metal devices.
+///
+/// If there is a failure retrieving a device, it won't lead to a hard error, but an error will be
+/// logged and the corresponding device won't be available.
+#[cfg(all(feature = "opencl", feature = "metal", not(feature = "cuda")))]
+fn build_device_list() -> Vec<Device> {
+    let mut all_devices = Vec::new();
+
+    let opencl_devices = opencl::utils::build_device_list();
+    let metal_devices = metal::utils::build_device_list();
+
+    // Add OpenCL devices
+    for opencl_device in opencl_devices {
+        let device = Device {
+            vendor: opencl_device.vendor(),
+            name: opencl_device.name(),
+            memory: opencl_device.memory(),
+            compute_units: opencl_device.compute_units(),
+            compute_capability: opencl_device.compute_capability(),
+            pci_id: opencl_device.pci_id(),
+            uuid: opencl_device.uuid(),
+            opencl: Some(opencl_device),
+            metal: None,
+        };
+
+        all_devices.push(device);
+    }
+
+    // Add Metal devices that don't already have a corresponding OpenCL device
+    for metal_device in metal_devices {
+        // Skip if we already have a device with the same name (likely the same device)
+        if all_devices.iter().any(|d| d.name == metal_device.name()) {
+            continue;
+        }
+
+        let device = Device {
+            vendor: metal_device.vendor(),
+            name: metal_device.name(),
+            memory: metal_device.memory(),
+            compute_units: metal_device.compute_units(),
+            compute_capability: None,
+            pci_id: metal_device.pci_id(),
+            uuid: metal_device.uuid(),
+            opencl: None,
+            metal: Some(metal_device),
+        };
+
+        all_devices.push(device);
+    }
+
+    debug!("loaded devices: {:?}", all_devices);
+    all_devices
 }
 
 #[cfg(test)]

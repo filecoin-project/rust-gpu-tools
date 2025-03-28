@@ -36,7 +36,8 @@ fn get_pci_id(device: &opencl3::device::Device) -> GPUResult<PciId> {
             let bus_id = device.pci_bus_id_nv()? as u16;
             let device_id = device.pci_slot_id_nv()? as u16;
             (bus_id << 8) | device_id
-        }
+        },
+        Vendor::Apple => return Err(GPUError::Generic("Apple devices do not have a pci_id".to_string())),
     };
     Ok(id.into())
 }
