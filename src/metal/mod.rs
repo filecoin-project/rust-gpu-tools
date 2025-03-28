@@ -1,16 +1,21 @@
 //! The Metal specific implementation of a [`Buffer`], [`Device`], [`Program`] and [`Kernel`].
 
+pub(crate) mod device;
 pub(crate) mod utils;
 
+use log::debug;
+use metal::{self, CommandQueue, MTLResourceOptions};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::mem;
-use log::debug;
-use metal::{self, CommandQueue, MTLResourceOptions};
 
 use crate::device::{DeviceUuid, PciId, Vendor};
 use crate::error::{GPUError, GPUResult};
 use crate::LocalBuffer;
+
+pub use device::AsMetalDevice;
+
+use std::sync::Mutex;
 
 /// A Buffer to be used for sending and receiving data to/from the GPU.
 #[derive(Debug)]
@@ -33,6 +38,8 @@ pub struct Device {
     pci_id: PciId,
     uuid: Option<DeviceUuid>,
     device_name: String,
+    /// Metal context for this device, thread safety handled by internal reference counting
+    metal_context: Option<Mutex<metal::Device>>,
 }
 
 impl Hash for Device {
@@ -104,6 +111,7 @@ pub struct Program {
     queue: CommandQueue,
     functions: HashMap<String, metal::Function>,
     library: metal::Library,
+    metal_context: metal::Device,
 }
 
 impl Program {
@@ -113,65 +121,79 @@ impl Program {
     }
 
     /// Creates a program for a specific device from Metal source code.
-    pub fn from_metal(_device: &Device, src: &str) -> GPUResult<Program> {
+    pub fn from_metal(device: &Device, src: &str) -> GPUResult<Program> {
         debug!("Creating Metal program from source.");
-        
-        // This is a simplified implementation due to thread-safety constraints
-        // In a real implementation, we would use the actual Metal device
-        let device = metal::Device::system_default().unwrap();
-        
+
+        // Get the Metal device from the provided device
+        let metal_device = match &device.metal_context {
+            Some(context) => context.clone(),
+            None => return Err(GPUError::Metal("No Metal context available".to_string())),
+        };
+
+        // Acquire global Metal lock before compiling
+        let _lock = self::device::acquire_metal_lock();
+
         let options = metal::CompileOptions::new();
-        let library = device.new_library_with_source(src, &options)
+        let library = metal_device
+            .new_library_with_source(src, &options)
             .map_err(|err| GPUError::MetalCompile(err.to_string()))?;
-        
-        let queue = device.new_command_queue();
-        
+
+        let queue = metal_device.new_command_queue();
+
         // Pre-load all functions from the library
         let function_names = library.function_names();
         let mut functions = HashMap::new();
-        
+
         for name in function_names.iter() {
             if let Ok(function) = library.get_function(name, None) {
                 functions.insert(name.to_string(), function);
             }
         }
-        
+
         Ok(Program {
-            device_name: device.name().to_string(),
+            device_name: device.name.clone(),
             queue,
             functions,
             library,
+            metal_context: metal_device,
         })
     }
-    
+
     /// Creates a program for a specific device from a compiled Metal binary (metallib).
-    pub fn from_binary(_device: &Device, bin: &[u8]) -> GPUResult<Program> {
+    pub fn from_binary(device: &Device, bin: &[u8]) -> GPUResult<Program> {
         debug!("Creating Metal program from binary.");
-        
-        // This is a simplified implementation due to thread-safety constraints
-        // In a real implementation, we would use the actual Metal device
-        let device = metal::Device::system_default().unwrap();
-        
-        let library = device.new_library_with_data(bin)
+
+        // Get the Metal device from the provided device
+        let metal_device = match &device.metal_context {
+            Some(context) => context.clone(),
+            None => return Err(GPUError::Metal("No Metal context available".to_string())),
+        };
+
+        // Acquire global Metal lock before working with the library
+        let _lock = self::device::acquire_metal_lock();
+
+        let library = metal_device
+            .new_library_with_data(bin)
             .map_err(|err| GPUError::MetalCompile(err.to_string()))?;
-        
-        let queue = device.new_command_queue();
-        
+
+        let queue = metal_device.new_command_queue();
+
         // Pre-load all functions from the library
         let function_names = library.function_names();
         let mut functions = HashMap::new();
-        
+
         for name in function_names.iter() {
             if let Ok(function) = library.get_function(name, None) {
                 functions.insert(name.to_string(), function);
             }
         }
-        
+
         Ok(Program {
-            device_name: device.name().to_string(),
+            device_name: device.name.clone(),
             queue,
             functions,
             library,
+            metal_context: metal_device,
         })
     }
 
@@ -189,14 +211,12 @@ impl Program {
     /// where it is unsafe. This is done to have symmetry between both APIs.
     pub unsafe fn create_buffer<T>(&self, length: usize) -> GPUResult<Buffer<T>> {
         assert!(length > 0);
-        
-        // Get the Metal device from the system to ensure we have the right device
-        let device = metal::Device::system_default().unwrap();
-        let buffer = device.new_buffer(
+
+        let buffer = self.metal_context.new_buffer(
             (length * std::mem::size_of::<T>()) as u64,
-            MTLResourceOptions::StorageModeShared
+            MTLResourceOptions::StorageModeShared,
         );
-        
+
         Ok(Buffer::<T> {
             buffer,
             length,
@@ -208,17 +228,17 @@ impl Program {
     pub fn create_buffer_from_slice<T>(&self, slice: &[T]) -> GPUResult<Buffer<T>> {
         // Calculate the size in bytes
         let bytes_len = mem::size_of_val(slice);
-        
-        // Get the Metal device from the system to ensure we have the right device
-        let device = metal::Device::system_default().unwrap();
-        
+
+        // Acquire the Metal lock
+        let _lock = self::device::acquire_metal_lock();
+
         // Create a Metal buffer with the correct size
-        let buffer = device.new_buffer_with_data(
+        let buffer = self.metal_context.new_buffer_with_data(
             slice.as_ptr() as *const _,
             bytes_len as u64,
-            MTLResourceOptions::StorageModeShared
+            MTLResourceOptions::StorageModeShared,
         );
-        
+
         Ok(Buffer::<T> {
             buffer,
             length: slice.len(),
@@ -237,14 +257,16 @@ impl Program {
         global_work_size: usize,
         local_work_size: usize,
     ) -> GPUResult<Kernel> {
-        let function = self.functions.get(name)
+        let function = self
+            .functions
+            .get(name)
             .ok_or_else(|| GPUError::KernelNotFound(name.to_string()))?;
-        
-        // Get the device from the system
-        let device = metal::Device::system_default().unwrap();
-        let pipeline_state = device.new_compute_pipeline_state_with_function(function)
+
+        let pipeline_state = self
+            .metal_context
+            .new_compute_pipeline_state_with_function(function)
             .map_err(|err| GPUError::Metal(err.to_string()))?;
-        
+
         Ok(Kernel {
             pipeline_state,
             global_work_size,
@@ -256,36 +278,32 @@ impl Program {
     }
 
     /// Puts data from an existing buffer onto the GPU.
-    pub fn write_from_buffer<T>(
-        &self,
-        buffer: &mut Buffer<T>,
-        data: &[T],
-    ) -> GPUResult<()> {
+    pub fn write_from_buffer<T>(&self, buffer: &mut Buffer<T>, data: &[T]) -> GPUResult<()> {
         assert!(data.len() <= buffer.length, "Buffer is too small");
-        
+
         let bytes_len = mem::size_of_val(data);
         let dest_ptr = buffer.buffer.contents() as *mut u8;
-        
+
         unsafe {
             let src_ptr = data.as_ptr() as *const u8;
             std::ptr::copy_nonoverlapping(src_ptr, dest_ptr, bytes_len);
         }
-        
+
         Ok(())
     }
 
     /// Reads data from the GPU into an existing buffer.
     pub fn read_into_buffer<T>(&self, buffer: &Buffer<T>, data: &mut [T]) -> GPUResult<()> {
         assert!(data.len() <= buffer.length, "Buffer is too small");
-        
+
         let bytes_len = mem::size_of_val(data);
         let src_ptr = buffer.buffer.contents() as *const u8;
-        
+
         unsafe {
             let dest_ptr = data.as_mut_ptr() as *mut u8;
             std::ptr::copy_nonoverlapping(src_ptr, dest_ptr, bytes_len);
         }
-        
+
         Ok(())
     }
 
@@ -314,7 +332,9 @@ pub trait KernelArgument {
 
 impl<T> KernelArgument for Buffer<T> {
     fn push(&self, kernel: &mut Kernel, index: usize) {
-        kernel.args.push(KernelArg::Buffer(self.buffer.clone(), index));
+        kernel
+            .args
+            .push(KernelArg::Buffer(self.buffer.clone(), index));
     }
 }
 
@@ -335,7 +355,7 @@ impl<T> KernelArgument for LocalBuffer<T> {
         kernel.num_local_buffers += 1;
         kernel.args.push(KernelArg::ThreadgroupMemory(
             self.length * std::mem::size_of::<T>(),
-            index
+            index,
         ));
     }
 }
@@ -380,12 +400,12 @@ impl Kernel {
                 "There cannot be more than one `LocalBuffer`.".to_string(),
             ));
         }
-        
+
         let command_buffer = self.queue.new_command_buffer();
         let command_encoder = command_buffer.new_compute_command_encoder();
-        
+
         command_encoder.set_compute_pipeline_state(&self.pipeline_state);
-        
+
         // Set all arguments
         for arg in &self.args {
             match arg {
@@ -396,14 +416,14 @@ impl Kernel {
                     command_encoder.set_bytes(
                         *index as u64,
                         std::mem::size_of::<i32>() as u64,
-                        value as *const _ as *const _
+                        value as *const _ as *const _,
                     );
                 }
                 KernelArg::UInt(value, index) => {
                     command_encoder.set_bytes(
                         *index as u64,
                         std::mem::size_of::<u32>() as u64,
-                        value as *const _ as *const _
+                        value as *const _ as *const _,
                     );
                 }
                 KernelArg::ThreadgroupMemory(size, index) => {
@@ -411,27 +431,27 @@ impl Kernel {
                 }
             }
         }
-        
+
         // Calculate the grid and threadgroup sizes
         let grid_size = metal::MTLSize {
             width: self.global_work_size as u64 * self.local_work_size as u64,
             height: 1,
-            depth: 1
+            depth: 1,
         };
-        
+
         let threadgroup_size = metal::MTLSize {
             width: self.local_work_size as u64,
             height: 1,
-            depth: 1
+            depth: 1,
         };
-        
+
         // Dispatch the compute kernel
         command_encoder.dispatch_threads(grid_size, threadgroup_size);
         command_encoder.end_encoding();
-        
+
         command_buffer.commit();
         command_buffer.wait_until_completed();
-        
+
         Ok(())
     }
 }
@@ -447,17 +467,71 @@ mod tests {
         if cfg!(not(target_os = "macos")) {
             return;
         }
-        
+
         let devices = utils::build_device_list();
         // Ensure we found at least one Metal device on macOS
         if cfg!(target_os = "macos") {
             assert!(!devices.is_empty(), "No Metal devices found on macOS");
-            
+
             // Print found devices for debugging
             for device in &devices {
-                println!("Found Metal device: {} ({} bytes, {} compute units)",
-                         device.name(), device.memory(), device.compute_units());
+                println!(
+                    "Found Metal device: {} ({} bytes, {} compute units)",
+                    device.name(),
+                    device.memory(),
+                    device.compute_units()
+                );
+
+                // Check that the metal_context is properly initialized
+                assert!(
+                    device.metal_context.is_some(),
+                    "Metal context should be initialized"
+                );
             }
         }
+    }
+
+    #[test]
+    fn test_metal_device_context() {
+        // Skip test if running CI on non-Apple hardware
+        if cfg!(not(target_os = "macos")) {
+            return;
+        }
+
+        // Get devices and check that contexts are valid
+        let devices = utils::build_device_list();
+        if devices.is_empty() {
+            println!("No Metal devices found, skipping test");
+            return;
+        }
+
+        let device = &devices[0];
+
+        // Verify metal context is present
+        assert!(
+            device.metal_context.is_some(),
+            "Metal context should be initialized"
+        );
+
+        // Check that the device name matches
+        let context_name = device.metal_context.as_ref().unwrap().name().to_string();
+        assert_eq!(device.name, context_name, "Device names don't match");
+
+        // Try creating a program
+        let src = "
+            #include <metal_stdlib>
+            using namespace metal;
+            kernel void test_kernel(device int* buffer [[buffer(0)]]) {
+                buffer[0] = 42;
+            }
+        ";
+
+        // This should not panic if our device context is valid
+        let program_result = Program::from_metal(device, src);
+        assert!(
+            program_result.is_ok(),
+            "Failed to create program: {:?}",
+            program_result.err()
+        );
     }
 }

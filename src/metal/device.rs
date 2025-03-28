@@ -1,7 +1,16 @@
 //! Module for interfacing with Metal devices.
 
+use std::sync::Mutex;
+use once_cell::sync::Lazy;
+use log::debug;
 use metal::Device as MetalDevice;
 use crate::Device as GPUDevice;
+
+/// Global device lock for ensuring thread safety when interacting with Metal devices
+static METAL_DEVICE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| {
+    debug!("Initialized Metal device lock");
+    Mutex::new(())
+});
 
 /// Extend the Device with Metal-specific functionality.
 pub trait AsMetalDevice {
@@ -18,15 +27,23 @@ impl AsMetalDevice for GPUDevice {
 #[cfg(feature = "metal")]
 impl AsMetalDevice for crate::metal::Device {
     fn metal_device(&self) -> Option<&MetalDevice> {
-        // In a real implementation, we would store and return a reference to the actual Metal device
-        // However, due to thread-safety constraints, we simply return None here
-        // and create a new device when needed
-        None
+        self.metal_context.as_ref()
     }
 }
 
 /// Get the Metal device for a specific device.
-pub fn get_metal_device(_device: &GPUDevice) -> Option<MetalDevice> {
-    // For thread safety, we always use the system default
-    metal::Device::system_default()
+pub fn get_metal_device(device: &GPUDevice) -> Option<MetalDevice> {
+    if let Some(metal_device) = device.metal_device() {
+        if let Some(context) = metal_device.metal_device() {
+            return Some(context.clone());
+        }
+    }
+    
+    // If no specific device is found, return None
+    None
+}
+
+/// Acquire a lock when doing operations that require thread safety with Metal devices
+pub fn acquire_metal_lock() -> std::sync::MutexGuard<'static, ()> {
+    METAL_DEVICE_LOCK.lock().expect("Metal device lock was poisoned")
 }

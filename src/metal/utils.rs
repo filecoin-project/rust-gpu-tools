@@ -75,5 +75,6 @@ fn build_device(metal_device: &MetalDevice) -> Result<Device, GPUError> {
         pci_id,
         uuid,
         device_name: name,
+        metal_context: Some(metal_device.clone()),
     })
 }
