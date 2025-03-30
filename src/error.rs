@@ -9,11 +9,16 @@ use rustacuda::error::CudaError;
 pub enum GPUError {
     /// Error from the underlying `opencl3` library, e.g. a memory allocation failure.
     #[cfg(feature = "opencl")]
-    #[error("Opencl3 Error: {0}{}", match .1 {
+    #[error("Opencl3 Error: {0}{}", match .message {
        Some(message) => format!(" {}", message),
        None => "".to_string(),
     })]
-    Opencl3(ClError, Option<String>),
+    Opencl3 {
+        /// The error code.
+        error: ClError,
+        /// The error message.
+        message: Option<String>,
+    },
 
     /// Error for OpenCL `clGetProgramInfo()` call failures.
     #[cfg(feature = "opencl")]
@@ -63,6 +68,9 @@ pub type GPUResult<T> = std::result::Result<T, GPUError>;
 #[cfg(feature = "opencl")]
 impl From<ClError> for GPUError {
     fn from(error: ClError) -> Self {
-        GPUError::Opencl3(error, None)
+        GPUError::Opencl3 {
+            error,
+            message: None,
+        }
     }
 }

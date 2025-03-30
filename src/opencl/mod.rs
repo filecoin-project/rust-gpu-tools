@@ -152,7 +152,10 @@ impl Program {
             let mut program = opencl3::program::Program::create_from_source(&context, src)?;
             if let Err(build_error) = program.build(context.devices(), "") {
                 let log = program.get_build_log(context.devices()[0])?;
-                return Err(GPUError::Opencl3(build_error, Some(log)));
+                return Err(GPUError::Opencl3 {
+                    error: build_error,
+                    message: Some(log),
+                });
             }
             debug!(
                 "Building kernel ({}) from source: done.",
@@ -191,7 +194,10 @@ impl Program {
         }?;
         if let Err(build_error) = program.build(context.devices(), "") {
             let log = program.get_build_log(context.devices()[0])?;
-            return Err(GPUError::Opencl3(build_error, Some(log)));
+            return Err(GPUError::Opencl3 {
+                error: build_error,
+                message: Some(log),
+            });
         }
         let queue = CommandQueue::create_default(&context, 0)?;
         let kernels = opencl3::kernel::create_program_kernels(&program)?;
@@ -258,9 +264,7 @@ impl Program {
             )?
         };
         // Transmuting types is safe as long a sizes match.
-        let bytes = unsafe {
-            std::slice::from_raw_parts(slice.as_ptr() as *const T as *const u8, bytes_len)
-        };
+        let bytes = unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, bytes_len) };
         // Write some data right-away. This makes a significant performance different.
         unsafe {
             self.queue
@@ -314,10 +318,7 @@ impl Program {
 
         // It is safe as long as the sizes match.
         let bytes = unsafe {
-            std::slice::from_raw_parts(
-                data.as_ptr() as *const T as *const u8,
-                mem::size_of_val(data),
-            )
+            std::slice::from_raw_parts(data.as_ptr() as *const u8, mem::size_of_val(data))
         };
         unsafe {
             self.queue
@@ -332,10 +333,7 @@ impl Program {
 
         // It is safe as long as the sizes match.
         let bytes = unsafe {
-            std::slice::from_raw_parts_mut(
-                data.as_mut_ptr() as *mut T as *mut u8,
-                mem::size_of_val(data),
-            )
+            std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, mem::size_of_val(data))
         };
         unsafe {
             self.queue

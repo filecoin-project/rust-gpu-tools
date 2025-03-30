@@ -6,7 +6,7 @@
 //!
 //!   1. RustaCUDA doesn't expose a higher level function to launch a kernel on the default stream
 //!   2. There was a bug, when the default stream was used implicitly via RustaCUDA's synchronuous
-//!   copy methods. To prevent such kind of bugs, be explicit which stream is used.
+//!      copy methods. To prevent such kind of bugs, be explicit which stream is used.
 
 pub(crate) mod utils;
 
@@ -133,13 +133,11 @@ impl Program {
     pub fn from_binary(device: &Device, filename: &CStr) -> GPUResult<Program> {
         debug!("Creating CUDA program from binary file.");
         rustacuda::context::CurrentContext::set_current(&device.context)?;
-        let module = rustacuda::module::Module::load_from_file(filename).map_err(|err| {
+        let module = rustacuda::module::Module::load_from_file(filename).inspect_err(|_err| {
             Self::pop_context();
-            err
         })?;
-        let stream = Stream::new(StreamFlags::NON_BLOCKING, None).map_err(|err| {
+        let stream = Stream::new(StreamFlags::NON_BLOCKING, None).inspect_err(|_err| {
             Self::pop_context();
-            err
         })?;
         let prog = Program {
             module,
@@ -155,13 +153,11 @@ impl Program {
     pub fn from_bytes(device: &Device, bytes: &[u8]) -> GPUResult<Program> {
         debug!("Creating CUDA program from bytes.");
         rustacuda::context::CurrentContext::set_current(&device.context)?;
-        let module = rustacuda::module::Module::load_from_bytes(bytes).map_err(|err| {
+        let module = rustacuda::module::Module::load_from_bytes(bytes).inspect_err(|_err| {
             Self::pop_context();
-            err
         })?;
-        let stream = Stream::new(StreamFlags::NON_BLOCKING, None).map_err(|err| {
+        let stream = Stream::new(StreamFlags::NON_BLOCKING, None).inspect_err(|_err| {
             Self::pop_context();
-            err
         })?;
         let prog = Program {
             module,
@@ -203,9 +199,7 @@ impl Program {
         let bytes_len = mem::size_of_val(slice);
 
         // Transmuting types is safe as long a sizes match.
-        let bytes = unsafe {
-            std::slice::from_raw_parts(slice.as_ptr() as *const T as *const u8, bytes_len)
-        };
+        let bytes = unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, bytes_len) };
 
         // It is only unsafe as long as the buffer isn't initialized, but that's what we do next.
         let mut buffer = unsafe { DeviceBuffer::<u8>::uninitialized(bytes_len)? };
@@ -245,10 +239,7 @@ impl Program {
 
         // Transmuting types is safe as long a sizes match.
         let bytes = unsafe {
-            std::slice::from_raw_parts(
-                data.as_ptr() as *const T as *const u8,
-                mem::size_of_val(data),
-            )
+            std::slice::from_raw_parts(data.as_ptr() as *const u8, mem::size_of_val(data))
         };
 
         // It is safe as we synchronize the stream after the call.
@@ -264,10 +255,7 @@ impl Program {
 
         // Transmuting types is safe as long a sizes match.
         let bytes = unsafe {
-            std::slice::from_raw_parts_mut(
-                data.as_mut_ptr() as *mut T as *mut u8,
-                mem::size_of_val(data),
-            )
+            std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, mem::size_of_val(data))
         };
 
         // It is safe as we synchronize the stream after the call.
