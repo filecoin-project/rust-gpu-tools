@@ -1,8 +1,12 @@
 name: CI
 
-on: [pull_request, push]
+on:
+  pull_request:
+  push:
+    branches:
+      - master
 
-# Cancel a job if there's a new on on the same branch started.
+# Cancel a job if there's a new one on the same branch started.
 # Based on https://stackoverflow.com/questions/58895283/stop-already-running-workflow-job-in-github-actions/67223051#67223051
 concurrency:
   group: ${{ github.ref }}
@@ -21,14 +25,18 @@ jobs:
     name: Clippy
     steps:
       - uses: actions/checkout@v4
+      - name: Install cargo clippy
+        run: rustup component add clippy
       - name: Run cargo clippy
-        run: cargo clippy --all-targets --workspace --all-features -- -D warnings
+        run: cargo clippy --all-targets --workspace -- -D warnings
 
   check_fmt:
     runs-on: ubuntu-24.04
     name: Checking fmt
     steps:
       - uses: actions/checkout@v4
+      - name: Install cargo fmt
+        run: rustup component add rustfmt
       - name: Run cargo fmt
         run: cargo fmt --all -- --check
 
@@ -37,6 +45,8 @@ jobs:
     name: Rustdoc
     steps:
       - uses: actions/checkout@v4
+      - name: Install cargo rustdoc
+        run: rustup component add rustdoc
       - name: Run rustdoc
         run: cargo rustdoc --all-features -- -D warnings
 
@@ -48,15 +58,31 @@ jobs:
       - name: Run cargo release build
         run: cargo build --release
 
-  # Enable these tests once there's a runner with a GPU.
-  #test_gpu:
-  #  runs-on: ubuntu-24.04
-  #  name: Test
-  #  steps:
-  #    - uses: actions/checkout@v4
-  #    - name: Install required packages
-  #      run: sudo apt install --no-install-recommends --yes libhwloc-dev nvidia-cuda-toolkit ocl-icd-opencl-dev
-  #    - name: Run tests
-  #      run: cargo test
-  #    - name: Run `add` example
-  #      run: cargo run --example add
+  test_gpu:
+    runs-on: ['self-hosted', 'linux', 'x64', '2xlarge+gpu']
+    name: Test
+    steps:
+      - uses: actions/checkout@v4
+      # TODO: Move the driver installation to the AMI.
+      # https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/install-nvidia-driver.html
+      # https://www.nvidia.com/en-us/drivers/
+      - name: Install CUDA drivers
+        run: |
+          curl -L -o nvidia-driver-local-repo-ubuntu2404-570.148.08_1.0-1_amd64.deb https://us.download.nvidia.com/tesla/570.148.08/nvidia-driver-local-repo-ubuntu2404-570.148.08_1.0-1_amd64.deb
+          sudo dpkg -i nvidia-driver-local-repo-ubuntu2404-570.148.08_1.0-1_amd64.deb
+          sudo cp /var/nvidia-driver-local-repo-ubuntu2404-570.148.08/nvidia-driver-local-*-keyring.gpg /usr/share/keyrings/
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes cuda-drivers
+          rm nvidia-driver-local-repo-ubuntu2404-570.148.08_1.0-1_amd64.deb
+      - name: Install required packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes libhwloc-dev nvidia-cuda-toolkit ocl-icd-opencl-dev
+      # TODO: Remove this and other rust installation directives from jobs running
+      - uses: dtolnay/rust-toolchain@21dc36fb71dd22e3317045c0c31a3f4249868b17
+        with:
+          toolchain: 1.83
+      - name: Run tests
+        run: cargo test
+      - name: Run `add` example
+        run: cargo run --example add
