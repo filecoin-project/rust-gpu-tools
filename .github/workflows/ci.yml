@@ -45,8 +45,6 @@ jobs:
     name: Rustdoc
     steps:
       - uses: actions/checkout@v4
-      - name: Install cargo rustdoc
-        run: rustup component add rustdoc
       - name: Run rustdoc
         run: cargo rustdoc --all-features -- -D warnings
 
