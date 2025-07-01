@@ -28,7 +28,7 @@ jobs:
       - name: Install cargo clippy
         run: rustup component add clippy
       - name: Run cargo clippy
-        run: cargo clippy --all-targets --workspace -- -D warnings
+        run: cargo clippy --all-targets --workspace --all-features -- -D warnings
 
   check_fmt:
     runs-on: ubuntu-24.04
