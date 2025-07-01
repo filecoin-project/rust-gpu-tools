@@ -37,6 +37,13 @@ fn get_pci_id(device: &opencl3::device::Device) -> GPUResult<PciId> {
             let device_id = device.pci_slot_id_nv()? as u16;
             (bus_id << 8) | device_id
         }
+        Vendor::Apple => {
+            // Apple Silicon GPUs are integrated into the SoC and don't use PCI bus
+            // Return an error to trigger synthetic PCI-ID assignment
+            return Err(GPUError::Generic(
+                "Apple GPUs don't have PCI bus information".to_string()
+            ));
+        }
     };
     Ok(id.into())
 }
