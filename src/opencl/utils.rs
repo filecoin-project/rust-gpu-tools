@@ -41,7 +41,7 @@ fn get_pci_id(device: &opencl3::device::Device) -> GPUResult<PciId> {
             // Apple Silicon GPUs are integrated into the SoC and don't use PCI bus
             // Return an error to trigger synthetic PCI-ID assignment
             return Err(GPUError::Generic(
-                "Apple GPUs don't have PCI bus information".to_string()
+                "Apple GPUs don't have PCI bus information".to_string(),
             ));
         }
     };
