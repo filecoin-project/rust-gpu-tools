@@ -21,8 +21,6 @@ jobs:
     name: Clippy
     steps:
       - uses: actions/checkout@v4
-      - name: Install clippy
-        run: rustup component add clippy
       - name: Run cargo clippy
         run: cargo clippy --all-targets --workspace --all-features -- -D warnings
 
@@ -31,8 +29,6 @@ jobs:
     name: Checking fmt
     steps:
       - uses: actions/checkout@v4
-      - name: Install rustfmt
-        run: rustup component add rustfmt
       - name: Run cargo fmt
         run: cargo fmt --all -- --check
 
