@@ -192,7 +192,7 @@ macro_rules! program_closures {
 /// ### Example
 ///
 /// ```
-/// use rust_gpu_tools::{cuda, opencl, program_closures};
+/// use rust_gpu_tools::{cuda, program_closures};
 ///
 /// let closures = program_closures!(|program, arg: u8| -> bool {
 ///     true
@@ -201,13 +201,7 @@ macro_rules! program_closures {
 /// // Generates
 /// let closures = (
 ///     |program: &cuda::Program, arg: u8| { true },
-///     |program: &opencl::Program, arg: u8| { true },
-/// );
-///
-/// // If e.g. the `cuda` feature is disabled, it would generate
-/// let closures_without_cuda = (
 ///     (),
-///     |program: &opencl::Program, arg: u8| { true },
 /// );
 /// ```
 #[macro_export]
@@ -246,7 +240,7 @@ macro_rules! program_closures {
 /// ### Example
 ///
 /// ```
-/// use rust_gpu_tools::{cuda, opencl, program_closures};
+/// use rust_gpu_tools::{opencl, program_closures};
 ///
 /// let closures = program_closures!(|program, arg: u8| -> bool {
 ///     true
@@ -254,12 +248,6 @@ macro_rules! program_closures {
 ///
 /// // Generates
 /// let closures = (
-///     |program: &cuda::Program, arg: u8| { true },
-///     |program: &opencl::Program, arg: u8| { true },
-/// );
-///
-/// // If e.g. the `cuda` feature is disabled, it would generate
-/// let closures_without_cuda = (
 ///     (),
 ///     |program: &opencl::Program, arg: u8| { true },
 /// );

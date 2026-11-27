@@ -220,7 +220,7 @@ impl Program {
     /// number of threads. Instead it follows CUDA's definition and is the number of
     /// `local_work_size` sized thread groups. So the total number of threads is
     /// `global_work_size * local_work_size`.
-    pub fn create_kernel(&self, name: &str, gws: usize, lws: usize) -> GPUResult<Kernel> {
+    pub fn create_kernel(&self, name: &str, gws: usize, lws: usize) -> GPUResult<Kernel<'_>> {
         let function_name = CString::new(name).expect("Kernel name must not contain nul bytes");
         let function = self.module.get_function(&function_name)?;
 
