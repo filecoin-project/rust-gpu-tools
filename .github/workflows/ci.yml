@@ -6,57 +6,64 @@ on:
     branches:
       - master
 
-# Cancel a job if there's a new one on the same branch started.
-# Based on https://stackoverflow.com/questions/58895283/stop-already-running-workflow-job-in-github-actions/67223051#67223051
 concurrency:
-  group: ${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
+  RUSTFLAGS: "-Dwarnings"
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
-  # Faster crates.io index checkout.
-  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
-  RUST_LOG: debug
 
 jobs:
-  check_clippy:
-    runs-on: ubuntu-24.04
-    name: Clippy
+  set-msrv:
+    runs-on: ubuntu-latest
+    outputs:
+      msrv: ${{ steps.msrv.outputs.msrv }}
+      pinned: ${{ steps.msrv.outputs.pinned }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Run cargo clippy
-        run: cargo clippy --all-targets --workspace --all-features -- -D warnings
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: msrv
+        run: |
+          echo "msrv=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[0].rust_version')" | tee --append "$GITHUB_OUTPUT"
+          echo "pinned=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" | tee --append "$GITHUB_OUTPUT"
 
-  check_fmt:
-    runs-on: ubuntu-24.04
-    name: Checking fmt
+  linux:
+    needs: set-msrv
+    runs-on: ubuntu-latest
+    name: Build and test (${{ matrix.toolchain }})
+    strategy:
+      matrix:
+        toolchain:
+          - ${{ needs.set-msrv.outputs.msrv }}
+          - ${{ needs.set-msrv.outputs.pinned }}
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Run cargo fmt
-        run: cargo fmt --all -- --check
-
-  rustdoc:
-    runs-on: ubuntu-24.04
-    name: Rustdoc
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run rustdoc
-        run: cargo rustdoc --all-features -- -D warnings
-
-  build:
-    runs-on: ubuntu-24.04
-    name: Release build
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run cargo release build
-        run: cargo build --release
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install toolchain
+        run: rustup toolchain install ${{ matrix.toolchain }} --profile minimal
+      - name: Install required packages
+        run: sudo apt-get install --no-install-recommends --yes ocl-icd-opencl-dev
+      # Checking doesn't link, so CUDA builds need neither the toolkit nor a driver.
+      - name: Check all feature combinations
+        run: |
+          cargo check --all-targets
+          cargo check --all-targets --no-default-features --features cuda
+          cargo check --all-targets --no-default-features --features opencl
+      # GitHub-hosted runners have no GPU or OpenCL platform; device tests run in test_gpu.
+      - name: Run OpenCL tests
+        run: cargo test --no-default-features --features opencl -- --skip test_device_all
 
   test_gpu:
-    runs-on: ['self-hosted', 'linux', 'x64', '2xlarge+gpu']
-    name: Test
+    needs: set-msrv
+    runs-on: ['self-hosted', 'linux', 'x64', 'xlarge+gpu']
+    name: Test on GPU
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # TODO: Move the driver installation to the AMI.
       # https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/install-nvidia-driver.html
       # https://www.nvidia.com/en-us/drivers/
@@ -68,15 +75,39 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes cuda-drivers
           rm nvidia-driver-local-repo-ubuntu2404-570.148.08_1.0-1_amd64.deb
-      - name: Install required packages
+      - name: Load NVIDIA kernel modules and verify GPU
         run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes libhwloc-dev nvidia-cuda-toolkit ocl-icd-opencl-dev
-      # TODO: Remove this and other rust installation directives from jobs running
-      - uses: dtolnay/rust-toolchain@21dc36fb71dd22e3317045c0c31a3f4249868b17
+          sudo modprobe nvidia
+          sudo modprobe nvidia-uvm
+          nvidia-smi
+      - name: Install required packages
+        run: sudo apt-get install --no-install-recommends --yes nvidia-cuda-toolkit ocl-icd-opencl-dev
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
         with:
-          toolchain: 1.81
+          toolchain: ${{ needs.set-msrv.outputs.pinned }}
       - name: Run tests
         run: cargo test
       - name: Run `add` example
         run: cargo run --example add
+
+  clippy_check:
+    runs-on: ubuntu-latest
+    name: Clippy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run cargo clippy with cuda and opencl features
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Run cargo clippy with cuda feature
+        run: cargo clippy --all-targets --no-default-features --features cuda -- -D warnings
+      - name: Run cargo clippy with opencl feature
+        run: cargo clippy --all-targets --no-default-features --features opencl -- -D warnings
+
+  check_fmt_and_docs:
+    runs-on: ubuntu-latest
+    name: Checking fmt and docs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: Docs
+        run: cargo rustdoc --all-features -- -D warnings

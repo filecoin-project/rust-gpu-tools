@@ -1,0 +1,9 @@
+[bans]
+multiple-versions = "allow"
+
+[licenses]
+allow = [
+  "Apache-2.0",
+  "MIT",
+  "Unicode-3.0",
+]

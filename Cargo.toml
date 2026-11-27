@@ -7,7 +7,8 @@ edition = "2021"
 homepage = "https://github.com/filecoin-project/rust-gpu-tools"
 license = "MIT/Apache-2.0"
 repository = "https://github.com/filecoin-project/rust-gpu-tools"
-rust-version = "1.81.0"
+rust-version = "1.85"
+resolver = "3"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
@@ -17,12 +18,15 @@ cuda = ["rustacuda"]
 
 [dependencies]
 home = "0.5"
-sha2 = "0.10"
-thiserror = "2.0.12"
-log = "0.4.26"
+sha2 = "0.11"
+thiserror = "2.0.21"
+log = "0.4.29"
 hex = "0.4.3"
 
 opencl3 = { version = "0.11.0", default-features = false, features = ["CL_VERSION_1_2"], optional = true }
 rustacuda = { package = "fil-rustacuda", version = "0.1.3", optional = true }
-once_cell = "1.8.0"
-temp-env = "0.3.3"
+once_cell = "1.21.3"
+
+[[example]]
+name = "add"
+required-features = ["cuda", "opencl"]

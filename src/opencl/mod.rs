@@ -291,7 +291,7 @@ impl Program {
         name: &str,
         global_work_size: usize,
         local_work_size: usize,
-    ) -> GPUResult<Kernel> {
+    ) -> GPUResult<Kernel<'_>> {
         let kernel = self
             .kernels_by_name
             .get(name)
